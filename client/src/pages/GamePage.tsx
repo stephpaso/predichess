@@ -46,13 +46,17 @@ export function GamePage() {
   const orientation = myColor === "b" ? "black" : "white";
 
   const applyState = useCallback((s: PredictChessState, sessionId: string) => {
-    setPhase(s.phase);
-    setFen(s.fen);
-    setTimerMs(s.timerMs);
+    setPhase(s.phase ?? "lobby");
+    if (s.fen) setFen(s.fen);
+    setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
-    setRoundIndex(s.roundIndex);
+    setRoundIndex(s.roundIndex ?? 0);
 
-    const me = [...s.players.values()].find((p) => p.sessionId === sessionId);
+    // First Colyseus sync can omit nested Schema fields briefly ("refId" hydration).
+    const players = s.players;
+    if (!players) return;
+
+    const me = [...players.values()].find((p) => p.sessionId === sessionId);
     if (me?.color === "white") setMyColor("w");
     else if (me?.color === "black") setMyColor("b");
 
@@ -66,7 +70,7 @@ export function GamePage() {
     }
 
     if (s.phase === "planning" || s.phase === "lobby") {
-      setDisplayFen(s.fen);
+      if (s.fen) setDisplayFen(s.fen);
     }
   }, []);
 
@@ -175,7 +179,10 @@ export function GamePage() {
 
   const slotsUi = useMemo(() => plan, [plan]);
 
-  const lobbyWait = phase === "lobby" && room && room.state.players.size < 2;
+  const lobbyWait =
+    phase === "lobby" &&
+    room?.state?.players != null &&
+    room.state.players.size < 2;
 
   return (
     <div className="mx-auto flex min-h-[100dvh] max-w-lg flex-col px-3 pb-8 pt-6">
