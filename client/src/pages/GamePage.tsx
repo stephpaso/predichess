@@ -86,8 +86,11 @@ export function GamePage() {
         r.onStateChange(() => {
           applyState(r!.state, r!.sessionId);
         });
-      } catch {
-        setError("Connessione fallita o stanza inesistente.");
+      } catch (err) {
+        console.error("joinPredictRoom", err);
+        setError(
+          "Connessione fallita o stanza inesistente. Controlla che il backend sia in esecuzione (porta 2567) e che il browser punti allo stesso host del server (localhost o IP della macchina)."
+        );
       }
     })();
 

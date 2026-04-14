@@ -1,14 +1,37 @@
 import { Client } from "colyseus.js";
 import { PredictChessState } from "../schema/PredictChessState";
 
-/** HTTP API base (use same origin + Vite proxy in dev). */
+/** HTTP API: same origin in dev (Vite proxy → server). */
 export const apiBase = import.meta.env.VITE_API_URL ?? "";
 
-/** Colyseus WebSocket endpoint (must match server port in dev). */
-export const colyseusEndpoint =
-  import.meta.env.VITE_COLYSEUS_URL ?? "http://127.0.0.1:2567";
+/**
+ * Colyseus WebSocket URL. Must reach the same machine that runs the game server.
+ * - Never hard-code 127.0.0.1: use the browser hostname so LAN / "localhost" work.
+ * - On localhost, prefer 127.0.0.1 to avoid IPv6 (::1) vs IPv4 listen mismatches on Windows.
+ */
+export function getColyseusEndpoint(): string {
+  const fromEnv = import.meta.env.VITE_COLYSEUS_URL;
+  if (fromEnv) return fromEnv;
 
-export const colyseus = new Client(colyseusEndpoint);
+  if (typeof window === "undefined" || !window.location?.hostname) {
+    return "http://127.0.0.1:2567";
+  }
+
+  const { protocol, hostname } = window.location;
+  const host =
+    hostname === "localhost" || hostname === "127.0.0.1" ? "127.0.0.1" : hostname;
+
+  return `${protocol}//${host}:2567`;
+}
+
+let client: Client | null = null;
+
+export function getColyseusClient(): Client {
+  if (!client) {
+    client = new Client(getColyseusEndpoint());
+  }
+  return client;
+}
 
 export async function createMatchRoom(): Promise<{ roomId: string; roomCode: string }> {
   const res = await fetch(`${apiBase}/match/create`, { method: "POST" });
@@ -17,5 +40,5 @@ export async function createMatchRoom(): Promise<{ roomId: string; roomCode: str
 }
 
 export async function joinPredictRoom(roomId: string) {
-  return colyseus.joinById<PredictChessState>(roomId);
+  return getColyseusClient().joinById<PredictChessState>(roomId);
 }
