@@ -1,4 +1,4 @@
-import { Room, Client } from "colyseus";
+import { Room, Client } from "@colyseus/core";
 import { PredictChessState, Player, PlannedMove, StepSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
 import { padMoves, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";

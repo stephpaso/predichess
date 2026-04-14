@@ -1,7 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
-import { Server, matchMaker } from "colyseus";
+import "colyseus";
+import { Server, matchMaker } from "@colyseus/core";
 import { GameRoom } from "./rooms/GameRoom.js";
 import { generateRoomCode, releaseRoomCode } from "./registry.js";
 
