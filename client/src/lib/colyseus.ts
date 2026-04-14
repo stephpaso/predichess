@@ -35,20 +35,14 @@ export function getColyseusClient(): Client {
   return client;
 }
 
-/** One in-flight join per roomId so React Strict Mode / remounts do not double-join (fills maxClients → "locked"). */
-const joinFlights = new Map<string, Promise<Room<PredictChessState>>>();
-
-export async function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
-  const existing = joinFlights.get(roomId);
-  if (existing) return existing;
-
-  const promise = getColyseusClient()
-    .joinById<PredictChessState>(roomId)
-    .finally(() => {
-      joinFlights.delete(roomId);
-    });
-  joinFlights.set(roomId, promise);
-  return promise;
+/**
+ * Each call starts a new join. Do not dedupe by roomId: React 18 Strict Mode
+ * mounts, unmounts, and remounts effects in dev; sharing one Promise made the
+ * first cleanup call leave() on the Room the second mount was still using
+ * ("locked" / broken sync on first load).
+ */
+export function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
+  return getColyseusClient().joinById<PredictChessState>(roomId);
 }
 
 export async function createMatchRoom(): Promise<{ roomId: string; roomCode: string }> {

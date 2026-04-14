@@ -42,6 +42,8 @@ export function GamePage() {
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
   const animTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Invalidates async join when the effect cleans up (React Strict Mode remount). */
+  const joinEpochRef = useRef(0);
 
   const orientation = myColor === "b" ? "black" : "white";
 
@@ -75,13 +77,13 @@ export function GamePage() {
   }, []);
 
   useEffect(() => {
+    const myEpoch = ++joinEpochRef.current;
     let joined: Room<PredictChessState> | null = null;
-    let cancelled = false;
 
     (async () => {
       try {
         const r = await joinPredictRoom(roomId);
-        if (cancelled) {
+        if (myEpoch !== joinEpochRef.current) {
           void r.leave();
           return;
         }
@@ -93,12 +95,13 @@ export function GamePage() {
         });
       } catch (err) {
         console.error("joinPredictRoom", err);
-        if (!cancelled) setError(formatJoinError(err));
+        if (myEpoch !== joinEpochRef.current) return;
+        setError(formatJoinError(err));
       }
     })();
 
     return () => {
-      cancelled = true;
+      joinEpochRef.current += 1;
       if (joined) void joined.leave();
       if (animTimer.current) clearInterval(animTimer.current);
     };
