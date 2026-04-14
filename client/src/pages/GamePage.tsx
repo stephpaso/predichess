@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
 import type { Room } from "colyseus.js";
-import { joinPredictRoom } from "../lib/colyseus";
+import { formatJoinError, joinPredictRoom } from "../lib/colyseus";
 import type { PredictChessState } from "../schema/PredictChessState";
 import { isMoveLegalForSide } from "../game/validation";
 
@@ -71,32 +71,31 @@ export function GamePage() {
   }, []);
 
   useEffect(() => {
-    let r: Room<PredictChessState> | null = null;
+    let joined: Room<PredictChessState> | null = null;
     let cancelled = false;
 
     (async () => {
       try {
-        r = await joinPredictRoom(roomId);
+        const r = await joinPredictRoom(roomId);
         if (cancelled) {
           void r.leave();
           return;
         }
+        joined = r;
         setRoom(r);
         applyState(r.state, r.sessionId);
         r.onStateChange(() => {
-          applyState(r!.state, r!.sessionId);
+          applyState(r.state, r.sessionId);
         });
       } catch (err) {
         console.error("joinPredictRoom", err);
-        setError(
-          "Connessione fallita o stanza inesistente. Controlla che il backend sia in esecuzione (porta 2567) e che il browser punti allo stesso host del server (localhost o IP della macchina)."
-        );
+        if (!cancelled) setError(formatJoinError(err));
       }
     })();
 
     return () => {
       cancelled = true;
-      if (r) void r.leave();
+      if (joined) void joined.leave();
       if (animTimer.current) clearInterval(animTimer.current);
     };
   }, [roomId, applyState]);
