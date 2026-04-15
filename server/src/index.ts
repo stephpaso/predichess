@@ -8,6 +8,7 @@ import "colyseus";
 import { Server, matchMaker } from "@colyseus/core";
 import { GameRoom } from "./rooms/GameRoom.js";
 import { generateRoomCode, registerRoomCode, releaseRoomCode, resolveRoomCode } from "./registry.js";
+import { getLiveStats } from "./stats.js";
 
 const PORT = Number(process.env.PORT) || 2567;
 
@@ -19,6 +20,10 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/stats", (_req, res) => {
+  res.json({ ok: true, ...getLiveStats() });
+});
+
 // Serve the Vite SPA (client/dist) from the same service in production.
 // Render sets NODE_ENV=production by default for Web Services.
 const __filename = fileURLToPath(import.meta.url);
@@ -28,10 +33,32 @@ if (fs.existsSync(clientDistPath)) {
   app.use(express.static(clientDistPath));
 }
 
-app.post("/match/create", async (_req, res) => {
+app.post("/match/create", async (req, res) => {
   const roomCode = generateRoomCode(5);
+  const body = (req.body ?? {}) as {
+    hostColorPref?: "white" | "black" | "random";
+    turnTimeSec?: number;
+    predictiveSlots?: number;
+    isPublic?: boolean;
+  };
+  const turnTimeSecRaw = Number(body.turnTimeSec ?? 20);
+  const predictiveSlotsRaw = Number(body.predictiveSlots ?? 3);
+  const isPublic = body.isPublic !== false;
+  const hostColorPref =
+    body.hostColorPref === "white" || body.hostColorPref === "black" || body.hostColorPref === "random"
+      ? body.hostColorPref
+      : "random";
+
+  const turnTimeSec = Math.max(10, Math.min(60, Math.floor(turnTimeSecRaw || 0)));
+  const predictiveSlots = Math.max(1, Math.min(5, Math.floor(predictiveSlotsRaw || 0)));
   try {
-    const reservation = await matchMaker.create("predict_chess", { roomCode });
+    const reservation = await matchMaker.create("predict_chess", {
+      roomCode,
+      hostColorPref,
+      turnTimeSec,
+      predictiveSlots,
+      isPublic,
+    });
     registerRoomCode(roomCode, reservation.room.roomId);
     res.json({
       roomId: reservation.room.roomId,

@@ -14,15 +14,17 @@ import { isMoveLegalForSide } from "../game/validation";
 
 type Planned = { from: Square; to: Square };
 
-const EMPTY_PLAN: Planned[] = Array.from({ length: 5 }, () => ({
-  from: "" as Square,
-  to: "" as Square,
-}));
+function makeEmptyPlan(slots: number): Planned[] {
+  const n = Math.max(1, Math.min(5, Math.floor(slots || 0)));
+  return Array.from({ length: n }, () => ({ from: "" as Square, to: "" as Square }));
+}
 
 function planFromState(
-  moves: { from: string; to: string }[] | undefined
+  moves: { from: string; to: string }[] | undefined,
+  slots: number
 ): Planned[] {
-  const out = EMPTY_PLAN.map((_, i) => {
+  const base = makeEmptyPlan(slots);
+  const out = base.map((_, i) => {
     const m = moves?.[i];
     if (!m?.from || !m?.to) return { from: "" as Square, to: "" as Square };
     return { from: m.from as Square, to: m.to as Square };
@@ -41,9 +43,8 @@ export function GamePage() {
   const [winner, setWinner] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
-  const [plan, setPlan] = useState<Planned[]>(() =>
-    EMPTY_PLAN.map((p) => ({ ...p }))
-  );
+  const [slotCount, setSlotCount] = useState(3);
+  const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(3));
   const [locked, setLocked] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
@@ -52,6 +53,7 @@ export function GamePage() {
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
   const prevPhaseRef = useRef<string>("lobby");
   const prevRoundRef = useRef<number>(0);
+  const draftTimer = useRef<number | null>(null);
 
   const orientation = myColor === "b" ? "black" : "white";
 
@@ -68,6 +70,8 @@ export function GamePage() {
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
     setRoundIndex(nextRound);
+    const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
+    setSlotCount(slots);
 
     // First Colyseus sync can omit nested Schema fields briefly ("refId" hydration).
     const players = s.players;
@@ -84,7 +88,7 @@ export function GamePage() {
       const raw = me?.color === "black" ? bm : wm;
       // New planning phase: reset local plan to empty, aligned to fresh serverFen.
       const isNewPlanning = prevPhase !== "planning" || nextRound !== prevRound;
-      setPlan(isNewPlanning ? EMPTY_PLAN.map((p) => ({ ...p })) : planFromState(raw));
+      setPlan(isNewPlanning ? makeEmptyPlan(slots) : planFromState(raw, slots));
       if (isNewPlanning) {
         setActiveSlot(0);
         setPickFrom(null);
@@ -110,6 +114,7 @@ export function GamePage() {
         whiteLocked?: boolean;
         blackLocked?: boolean;
         players?: Array<{ sessionId: string; color: string; connected: boolean }>;
+        predictiveSlots?: number;
       },
       sessionId: string
     ) => {
@@ -129,6 +134,8 @@ export function GamePage() {
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
       setRoundIndex(nextRound);
+      const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
+      setSlotCount(slots);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
         msg.players ?? [];
       setPlayersCount(players.length);
@@ -141,14 +148,14 @@ export function GamePage() {
       if (nextPhase === "planning") {
         const isNewPlanning = prevPhase !== "planning" || nextRound !== prevRound;
         if (isNewPlanning) {
-          setPlan(EMPTY_PLAN.map((p) => ({ ...p })));
+          setPlan(makeEmptyPlan(slots));
           setActiveSlot(0);
           setPickFrom(null);
           setHistoryCursor(null);
         }
       }
     },
-    []
+    [slotCount]
   );
 
   useEffect(() => {
@@ -245,6 +252,29 @@ export function GamePage() {
 
   const canEditPlan =
     phase === "planning" && myColor && !locked && timerMs > 0;
+
+  useEffect(() => {
+    setActiveSlot((cur) => {
+      const max = Math.max(0, slotCount - 1);
+      return Math.min(Math.max(0, cur), max);
+    });
+  }, [slotCount]);
+
+  // Send draft plan to server (for auto-confirm on timeout).
+  useEffect(() => {
+    if (!room || !canEditPlan || !myColor) return;
+    if (draftTimer.current) window.clearTimeout(draftTimer.current);
+    draftTimer.current = window.setTimeout(() => {
+      const moves = plan.map((p) =>
+        p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
+      );
+      room.send("draft_plan", { moves });
+    }, 220);
+    return () => {
+      if (draftTimer.current) window.clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+    };
+  }, [plan, room, canEditPlan, myColor]);
 
   const historyFens = useMemo(() => {
     const rounds = room?.state?.resolvedRounds?.toArray?.() ?? [];
@@ -361,9 +391,45 @@ export function GamePage() {
       {error && <p className="text-red-400">{error}</p>}
 
       {lobbyWait && (
-        <p className="mb-4 text-center text-slate-400">
-          In attesa del secondo giocatore…
-        </p>
+        <div className="mb-4 rounded-2xl border border-white/10 bg-slate-950 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-100">In attesa di un avversario…</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Condividi questo codice o un link di invito.
+              </p>
+            </div>
+            <span className="rounded-full border border-emerald-500/30 bg-emerald-950/30 px-3 py-1 text-[11px] text-emerald-200">
+              Lobby
+            </span>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <div className="rounded-xl border border-white/10 bg-slate-900 px-3 py-2">
+              <div className="text-[10px] text-slate-500">Codice stanza</div>
+              <div className="font-mono text-lg text-white">{roomId}</div>
+            </div>
+            <button
+              type="button"
+              className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-indigo-900/40 ring-1 ring-white/10 transition hover:bg-indigo-500 active:scale-[0.99]"
+              onClick={async () => {
+                const url = `${window.location.origin}/?room=${encodeURIComponent(roomId)}&guest=1`;
+                try {
+                  await navigator.clipboard.writeText(url);
+                  setToast("Link copiato");
+                } catch {
+                  try {
+                    // Fallback: select+copy via prompt
+                    window.prompt("Copia il link:", url);
+                  } finally {
+                    setToast("Link pronto");
+                  }
+                }
+              }}
+            >
+              Copia Link di Invito
+            </button>
+          </div>
+        </div>
       )}
 
       {!error && phase === "lobby" && playersCount === 2 && (
@@ -492,7 +558,10 @@ export function GamePage() {
             {activeSlot + 1}
           </p>
 
-          <div className="mt-3 grid grid-cols-5 gap-2">
+          <div
+            className="mt-3 grid gap-2"
+            style={{ gridTemplateColumns: `repeat(${slotCount}, minmax(0, 1fr))` }}
+          >
             {slotsUi.map((p, i) => (
               <button
                 key={i}

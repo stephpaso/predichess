@@ -50,6 +50,13 @@ export type CreateRoomResponse = {
   reservation: unknown;
 };
 
+export type MatchRoomOptions = {
+  hostColorPref: "white" | "black" | "random";
+  turnTimeSec: number; // 10-60
+  predictiveSlots: number; // 1-5
+  isPublic: boolean;
+};
+
 export async function consumePredictReservation(reservation: unknown): Promise<Room<PredictChessState>> {
   // colyseus.js types for seat reservations differ across versions; treat as unknown at runtime.
   type SeatReservationParam = Parameters<Client["consumeSeatReservation"]>[0];
@@ -124,10 +131,26 @@ export async function releasePredictRoom(roomId: string, room: Room<PredictChess
   }
 }
 
-export async function createMatchRoom(): Promise<CreateRoomResponse> {
-  const res = await fetch(`${apiBase}/match/create`, { method: "POST" });
+export async function createMatchRoom(options: Partial<MatchRoomOptions> = {}): Promise<CreateRoomResponse> {
+  const res = await fetch(`${apiBase}/match/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  });
   if (!res.ok) throw new Error("create_failed");
   return res.json() as Promise<CreateRoomResponse>;
+}
+
+export type AvailableRoomRow = {
+  roomId: string;
+  clients: number;
+  maxClients: number;
+  metadata?: Record<string, unknown>;
+};
+
+export async function getAvailablePredictRooms(): Promise<AvailableRoomRow[]> {
+  const rooms = (await getColyseusClient().getAvailableRooms("predict_chess")) as AvailableRoomRow[];
+  return rooms ?? [];
 }
 
 export function formatJoinError(err: unknown): string {
