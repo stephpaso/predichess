@@ -3,6 +3,7 @@ import cors from "cors";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 import "colyseus";
 import { Server, matchMaker } from "@colyseus/core";
 import { GameRoom } from "./rooms/GameRoom.js";
@@ -23,7 +24,9 @@ app.get("/health", (_req, res) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDistPath = path.resolve(__dirname, "../../client/dist");
-app.use(express.static(clientDistPath));
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+}
 
 app.post("/match/create", async (_req, res) => {
   const roomCode = generateRoomCode(5);
@@ -55,7 +58,12 @@ app.get("/match/resolve/:code", (req, res) => {
 
 // SPA fallback (must be after API routes)
 app.get("*", (_req, res) => {
-  res.sendFile(path.join(clientDistPath, "index.html"));
+  const indexPath = path.join(clientDistPath, "index.html");
+  if (!fs.existsSync(indexPath)) {
+    res.status(404).send("client_not_built");
+    return;
+  }
+  res.sendFile(indexPath);
 });
 
 const httpServer = createServer(app);

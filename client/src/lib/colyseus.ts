@@ -19,11 +19,20 @@ export function getColyseusEndpoint(): string {
     return "http://127.0.0.1:2567";
   }
 
-  const { protocol, hostname } = window.location;
-  const host =
-    hostname === "localhost" || hostname === "127.0.0.1" ? "127.0.0.1" : hostname;
+  const { protocol, hostname, port, host } = window.location;
 
-  return `${protocol}//${host}:2567`;
+  // Local dev: Vite runs on 5173 (or similar) and the Colyseus server on 2567.
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return `${protocol}//127.0.0.1:2567`;
+  }
+
+  // Production: when serving the SPA from the same Render service, do NOT hardcode :2567.
+  // Use the current origin host (domain + optional port).
+  if (!port) {
+    return `${protocol}//${host}`;
+  }
+
+  return `${protocol}//${host}`;
 }
 
 let client: Client | null = null;
