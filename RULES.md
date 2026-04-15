@@ -33,7 +33,7 @@ Durante l'esecuzione, lo stato della scacchiera cambia costantemente, introducen
 ```
 La Mossa Irregolare (Azione Annullata): Se, al momento dell'esecuzione, la mossa programmata da un giocatore risulta impossibile a causa dei cambiamenti avvenuti sulla scacchiera negli step precedenti, la mossa non viene effettuata. Il pezzo rimane fermo.
 
-    Esempio: Avevi programmato di muovere l'Alfiere in C4 allo step 3. Allo step 2, l'avversario ha posizionato un suo pezzo sulla traiettoria, bloccandola. Allo step 3, la tua mossa è invalida e il tuo Alfiere non si muove.
+Esempio: Avevi programmato di muovere l'Alfiere in C4 allo step 3. Allo step 2, l'avversario ha posizionato un suo pezzo sulla traiettoria, bloccandola. Allo step 3, la tua mossa è invalida e il tuo Alfiere non si muove.
 
 Il Divieto di Suicidio: Se una mossa mette il proprio Re sotto scacco (o non risolve uno scacco preesistente), è considerata irregolare e viene annullata.
 ```
@@ -45,7 +45,7 @@ Le catture avvengono normalmente quando un pezzo atterra sulla casella occupata 
 ```
 Distruzione Reciproca (Collisione Frontale): Se nello stesso identico step entrambi i giocatori muovono un proprio pezzo sulla stessa casella di destinazione, ed entrambi avrebbero il diritto di catturarsi a vicenda secondo le regole di movimento, avviene uno scontro simultaneo. Entrambi i pezzi vengono distrutti e rimossi dalla scacchiera.
 
-    Ecezione (Scontro tra Re): Se i due Re si muovono simultaneamente sulla stessa casella, la mossa è considerata irregolare per entrambi (poiché si metterebbero reciprocamente sotto scacco) e viene annullata. I Re rimangono nelle loro posizioni di partenza di quello step.
+Ecezione (Scontro tra Re): Se i due Re si muovono simultaneamente sulla stessa casella, la mossa è considerata irregolare per entrambi (poiché si metterebbero reciprocamente sotto scacco) e viene annullata. I Re rimangono nelle loro posizioni di partenza di quello step.
 ```
 
 1. Fine della Partita
