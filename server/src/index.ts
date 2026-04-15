@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
+import path from "path";
+import { fileURLToPath } from "url";
 import "colyseus";
 import { Server, matchMaker } from "@colyseus/core";
 import { GameRoom } from "./rooms/GameRoom.js";
@@ -15,6 +17,13 @@ app.use(express.json());
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
+
+// Serve the Vite SPA (client/dist) from the same service in production.
+// Render sets NODE_ENV=production by default for Web Services.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const clientDistPath = path.resolve(__dirname, "../../client/dist");
+app.use(express.static(clientDistPath));
 
 app.post("/match/create", async (_req, res) => {
   const roomCode = generateRoomCode(5);
@@ -42,6 +51,11 @@ app.get("/match/resolve/:code", (req, res) => {
     return;
   }
   res.json({ roomId });
+});
+
+// SPA fallback (must be after API routes)
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(clientDistPath, "index.html"));
 });
 
 const httpServer = createServer(app);

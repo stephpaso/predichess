@@ -72,9 +72,9 @@ export async function joinPredictRoom(roomId: string): Promise<Room<PredictChess
   // roomId here is the short roomCode used in the URL.
   const resolvedRoomId = await (async () => {
     const res = await fetch(`${apiBase}/match/resolve/${encodeURIComponent(roomId)}`);
-    if (!res.ok) throw new MatchMakeError(res.status, "room not found");
+    if (!res.ok) throw new MatchMakeError("room not found", res.status);
     const data = (await res.json()) as { roomId?: string };
-    if (!data.roomId) throw new MatchMakeError(404, "room not found");
+    if (!data.roomId) throw new MatchMakeError("room not found", 404);
     return data.roomId;
   })();
 
