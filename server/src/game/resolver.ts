@@ -44,7 +44,12 @@ function pieceTypeAt(fen: string, sq: Square): "k" | "other" {
   return p.type === "k" ? "k" : "other";
 }
 
-function applySanMove(fen: string, from: Square, to: Square, color: Color): string | null {
+function applySanMove(
+  fen: string,
+  from: Square,
+  to: Square,
+  color: Color
+): { fen: string; capture?: string } | null {
   const c = forkForSide(fen, color);
   const piece = c.get(from);
   if (!piece || piece.color !== color) return null;
@@ -53,7 +58,8 @@ function applySanMove(fen: string, from: Square, to: Square, color: Color): stri
   if (!found) return null;
   const result = c.move({ from, to, promotion: found.promotion });
   if (!result) return null;
-  return c.fen();
+  const capture = result.captured ? `${color}:${result.captured}@${result.to}` : undefined;
+  return { fen: c.fen(), capture };
 }
 
 function applyMutualDestruction(fen: string, wFrom: Square, bFrom: Square, dest: Square): string {
@@ -80,6 +86,8 @@ export type ResolutionStepResult = {
   fenAfter: string;
   gameOver: boolean;
   winner: "" | "white" | "black" | "draw";
+  collision: boolean;
+  captures: string[];
 };
 
 /**
@@ -108,16 +116,24 @@ export function resolveOneStep(
     bValid = isMoveLegalForSide(fen, bf, bt, "b");
   }
 
+  let collision = false;
+  const captures: string[] = [];
+
   if (wValid && bValid && wt === bt && wf && bf && wt) {
     const wKing = pieceTypeAt(fen, wf) === "k";
     const bKing = pieceTypeAt(fen, bf) === "k";
     if (!(wKing && bKing)) {
+      collision = true;
       fen = applyMutualDestruction(fen, wf, bf, wt);
+      captures.push(`w:*@${wt}`, `b:*@${wt}`);
     }
   } else {
     if (wValid && wf && wt) {
       const next = applySanMove(fen, wf, wt, "w");
-      if (next) fen = next;
+      if (next?.fen) {
+        fen = next.fen;
+        if (next.capture) captures.push(next.capture);
+      }
     }
     const mid = kingCaptureWinner(fen);
     if (mid) {
@@ -125,20 +141,25 @@ export function resolveOneStep(
         fenAfter: fen,
         gameOver: true,
         winner: mid,
+        collision,
+        captures,
       };
     }
     if (bValid && bf && bt) {
       const next = applySanMove(fen, bf, bt, "b");
-      if (next) fen = next;
+      if (next?.fen) {
+        fen = next.fen;
+        if (next.capture) captures.push(next.capture);
+      }
     }
   }
 
   const end = kingCaptureWinner(fen);
   if (end) {
-    return { fenAfter: fen, gameOver: true, winner: end };
+    return { fenAfter: fen, gameOver: true, winner: end, collision, captures };
   }
 
-  return { fenAfter: fen, gameOver: false, winner: "" };
+  return { fenAfter: fen, gameOver: false, winner: "", collision, captures };
 }
 
 export function padMoves(moves: PlannedMoveInput[]): PlannedMoveInput[] {

@@ -1,17 +1,21 @@
 import { Room, Client } from "@colyseus/core";
-import { PredictChessState, Player, PlannedMove, StepSnapshot } from "../schema/PredictChessState.js";
+import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
 import { padMoves, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { releaseRoomCode } from "../registry.js";
 
 const PLAN_MS = 20_000;
 const TICK_MS = 100;
+const MAX_ROUNDS = 40;
+const IDLE_DISPOSE_MS = 3 * 60_000;
 
 export class GameRoom extends Room<PredictChessState> {
   maxClients = 2;
   private roomCode: string = "";
   private planningEndsAt = 0;
   private timerInterval?: ReturnType<typeof setInterval>;
+  private idleTimer?: ReturnType<typeof setTimeout>;
+  private ending = false;
 
   private buildStatus() {
     return {
@@ -48,9 +52,14 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.whiteLocked = false;
     this.state.blackLocked = false;
     this.state.lastResolutionSteps.clear();
+    this.state.resolvedRounds.clear();
 
     this.onMessage("submit_plan", (client, message: { moves?: PlannedMoveInput[] }) => {
       this.handleSubmitPlan(client, message?.moves ?? []);
+    });
+
+    this.onMessage("resign", (client) => {
+      this.handleResign(client);
     });
 
     this.onMessage("status_req", (client) => {
@@ -76,6 +85,10 @@ export class GameRoom extends Room<PredictChessState> {
     }
 
     this.state.players.set(client.sessionId, player);
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
     this.broadcastStatus();
 
     if (this.clients.length === 2) {
@@ -102,10 +115,18 @@ export class GameRoom extends Room<PredictChessState> {
 
     this.state.players.delete(client.sessionId);
     this.broadcastStatus();
+
+    if (this.clients.length === 0 && !this.ending) {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = setTimeout(() => {
+        void this.disconnect();
+      }, IDLE_DISPOSE_MS);
+    }
   }
 
   onDispose() {
     if (this.timerInterval) clearInterval(this.timerInterval);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     releaseRoomCode(this.roomCode);
   }
 
@@ -113,6 +134,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.fen = new Chess().fen();
     this.state.winner = "";
     this.state.roundIndex = 0;
+    this.state.resolvedRounds.clear();
     console.log(
       `[GameRoom] state->planning roomId=${this.roomId} code=${this.roomCode} (clients=${this.clients.length})`
     );
@@ -220,6 +242,10 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.lastResolutionSteps.clear();
     this.broadcastStatus();
 
+    const round = new RoundSnapshot();
+    round.roundIndex = this.state.roundIndex;
+    round.fenBefore = this.state.fen;
+
     let fen = this.state.fen;
     const wm = this.plannedToInput(this.state.whiteMoves);
     const bm = this.plannedToInput(this.state.blackMoves);
@@ -230,17 +256,33 @@ export class GameRoom extends Room<PredictChessState> {
 
       const snap = new StepSnapshot();
       snap.fenAfter = fen;
+      snap.whiteMove = wm[i]?.from && wm[i]?.to ? `${wm[i]!.from}${wm[i]!.to}` : "";
+      snap.blackMove = bm[i]?.from && bm[i]?.to ? `${bm[i]!.from}${bm[i]!.to}` : "";
+      snap.collision = !!step.collision;
+      snap.captures.clear();
+      for (const c of step.captures ?? []) snap.captures.push(c);
       this.state.lastResolutionSteps.push(snap);
+      round.steps.push(snap);
 
       if (step.gameOver && step.winner) {
         this.state.fen = fen;
+        round.fenAfter = fen;
+        this.state.resolvedRounds.push(round);
         this.endGame(step.winner, "king");
         return;
       }
     }
 
     this.state.fen = fen;
+    round.fenAfter = fen;
+    this.state.resolvedRounds.push(round);
     this.state.roundIndex++;
+
+    if (this.state.roundIndex >= MAX_ROUNDS) {
+      const winner = this.materialWinner(fen);
+      this.endGame(winner, "max_rounds");
+      return;
+    }
 
     const chess = new Chess();
     chess.load(fen);
@@ -257,9 +299,35 @@ export class GameRoom extends Room<PredictChessState> {
     this.startPlanningPhase();
   }
 
+  private materialWinner(fen: string): "white" | "black" | "draw" {
+    const c = new Chess();
+    c.load(fen);
+    const values: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+    let w = 0;
+    let b = 0;
+    for (const row of c.board()) {
+      for (const p of row) {
+        if (!p) continue;
+        const v = values[p.type] ?? 0;
+        if (p.color === "w") w += v;
+        else b += v;
+      }
+    }
+    if (w === b) return "draw";
+    return w > b ? "white" : "black";
+  }
+
+  private handleResign(client: Client) {
+    if (this.state.phase === "finished" || this.ending) return;
+    const p = this.state.players.get(client.sessionId);
+    const color = p?.color;
+    if (color === "white") this.endGame("black", "resign");
+    else if (color === "black") this.endGame("white", "resign");
+  }
+
   private endGame(
     winner: "white" | "black" | "draw",
-    _reason: "king" | "checkmate" | "draw" | "disconnect"
+    _reason: "king" | "checkmate" | "draw" | "disconnect" | "max_rounds" | "resign"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
@@ -267,5 +335,11 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.winner = winner;
     this.state.timerMs = 0;
     this.broadcastStatus();
+    if (!this.ending) {
+      this.ending = true;
+      setTimeout(() => {
+        void this.disconnect();
+      }, 800);
+    }
   }
 }

@@ -13,6 +13,17 @@ export class PlannedMove extends Schema {
 
 export class StepSnapshot extends Schema {
   @type("string") fenAfter: string = "";
+  @type("string") whiteMove: string = ""; // "e2e4" (from+to) or ""
+  @type("string") blackMove: string = "";
+  @type("boolean") collision: boolean = false;
+  @type(["string"]) captures = new ArraySchema<string>(); // e.g. ["b:p@e4"]
+}
+
+export class RoundSnapshot extends Schema {
+  @type("number") roundIndex: number = 0;
+  @type("string") fenBefore: string = "";
+  @type("string") fenAfter: string = "";
+  @type([StepSnapshot]) steps = new ArraySchema<StepSnapshot>();
 }
 
 export class PredictChessState extends Schema {
@@ -45,4 +56,6 @@ export class PredictChessState extends Schema {
   @type("boolean") blackLocked: boolean = false;
 
   @type([StepSnapshot]) lastResolutionSteps = new ArraySchema<StepSnapshot>();
+
+  @type([RoundSnapshot]) resolvedRounds = new ArraySchema<RoundSnapshot>();
 }
