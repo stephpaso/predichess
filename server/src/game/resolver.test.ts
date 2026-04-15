@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import { padMoves, resolveOneStep, type PlannedMoveInput } from "./resolver.js";
+import { padMoves, padMovesN, resolveOneStep, type PlannedMoveInput } from "./resolver.js";
 
 function applySteps(fenBefore: string, white: PlannedMoveInput[], black: PlannedMoveInput[]) {
   let fen = fenBefore;
@@ -24,6 +24,23 @@ function expectPieceAt(fen: string, square: string, piece: string | null) {
 
 function run() {
   const startFen = new Chess().fen();
+
+  // padMovesN: respects custom slots and truncates.
+  {
+    const out = padMovesN(
+      [
+        { from: "a2", to: "a3" },
+        { from: "b2", to: "b3" },
+        { from: "c2", to: "c3" },
+        { from: "d2", to: "d3" },
+      ],
+      3
+    );
+    if (out.length !== 3) throw new Error(`Expected 3 moves, got ${out.length}`);
+    if (out[2]?.from !== "c2" || out[2]?.to !== "c3") {
+      throw new Error(`Expected third move c2->c3, got ${JSON.stringify(out[2])}`);
+    }
+  }
 
   // Case 1: White then Black sequentially, both legal.
   {

@@ -193,7 +193,12 @@ export function resolveOneStep(
 }
 
 export function padMoves(moves: PlannedMoveInput[]): PlannedMoveInput[] {
-  const out = moves.slice(0, 5);
-  while (out.length < 5) out.push({ ...EMPTY });
+  return padMovesN(moves, 5);
+}
+
+export function padMovesN(moves: PlannedMoveInput[], slots: number): PlannedMoveInput[] {
+  const n = Math.max(1, Math.min(5, Math.floor(slots || 0)));
+  const out = moves.slice(0, n);
+  while (out.length < n) out.push({ ...EMPTY });
   return out;
 }
