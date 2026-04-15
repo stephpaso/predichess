@@ -92,6 +92,14 @@ function run() {
     expectPieceAt(fen, "e5", "wp");
   }
 
+  // Case 4: In-check position must not throw when validating moves for either side.
+  // This specifically guards against chess.js "Null move not allowed when in check" caused by turn alignment.
+  {
+    const fenInCheck = "4k3/8/8/8/8/8/4R3/4K3 b - - 0 1"; // black to move, black king in check by white rook
+    const res = resolveOneStep(fenInCheck, { from: "", to: "" }, { from: "", to: "" });
+    if (!res || typeof res.fenAfter !== "string") throw new Error("Expected resolution result");
+  }
+
   console.log("[resolver.test] OK");
 }
 

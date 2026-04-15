@@ -10,7 +10,7 @@ import {
   releasePredictRoom,
 } from "../lib/colyseus";
 import type { PredictChessState } from "../schema/PredictChessState";
-import { isMoveLegalForSide } from "../game/validation";
+import { isInCheckForSide, isMoveLegalForSide } from "../game/validation";
 
 type Planned = { from: Square; to: Square };
 
@@ -30,6 +30,13 @@ function planFromState(
     return { from: m.from as Square, to: m.to as Square };
   });
   return out;
+}
+
+function withFenTurn(fen: string, color: Color): string {
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length < 2) return fen;
+  parts[1] = color;
+  return parts.join(" ");
 }
 
 export function GamePage() {
@@ -231,8 +238,7 @@ export function GamePage() {
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
       const step = new Chess();
-      step.load(fen);
-      step.setTurn(color);
+      step.load(withFenTurn(fen, color));
       const verbose = step.moves({ square: m.from, verbose: true });
       const found = verbose.find((mv) => mv.to === m.to);
       if (!found) break;
@@ -249,6 +255,16 @@ export function GamePage() {
   }, [phase, myColor, serverFen, plan]);
 
   const boardFen = phase === "planning" ? planningFen : displayFen;
+
+  const inCheckAtStart = useMemo(() => {
+    if (!myColor) return false;
+    return isInCheckForSide(serverFen, myColor);
+  }, [serverFen, myColor]);
+
+  const inCheckAfterPlan = useMemo(() => {
+    if (!myColor) return false;
+    return isInCheckForSide(planningFen, myColor);
+  }, [planningFen, myColor]);
 
   const canEditPlan =
     phase === "planning" && myColor && !locked && timerMs > 0;
@@ -286,11 +302,53 @@ export function GamePage() {
       }
     }
     return out;
-  }, [room]);
+  }, [room, roundIndex, phase, room?.state?.resolvedRounds?.length]);
 
   const viewingHistory =
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
   const effectiveBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
+
+  const goHistoryBack = useCallback(() => {
+    if (historyFens.length === 0) return;
+    setHistoryCursor((cur) => {
+      const next = cur == null ? historyFens.length - 1 : Math.max(0, cur - 1);
+      return next;
+    });
+  }, [historyFens.length]);
+
+  const goHistoryForward = useCallback(() => {
+    if (historyFens.length === 0) return;
+    setHistoryCursor((cur) => {
+      if (cur == null) return null;
+      const next = cur + 1;
+      return next >= historyFens.length ? null : next;
+    });
+  }, [historyFens.length]);
+
+  useEffect(() => {
+    function isTypingTarget(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = (el.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      if ((el as any).isContentEditable) return true;
+      return false;
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (isTypingTarget(e.target)) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goHistoryBack();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goHistoryForward();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [goHistoryBack, goHistoryForward]);
 
   function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
     return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
@@ -344,6 +402,13 @@ export function GamePage() {
 
   function confirmPlan() {
     if (!room || !canEditPlan || viewingHistory) return;
+    if (phase === "planning" && myColor && inCheckAtStart) {
+      const hasAnyMove = plan.some((p) => !!(p.from && p.to));
+      if (!hasAnyMove) {
+        setToast("Sei in scacco: devi fare almeno una mossa per parare lo scacco");
+        return;
+      }
+    }
     const moves = plan.map((p) =>
       p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
     );
@@ -447,6 +512,42 @@ export function GamePage() {
         </div>
       )}
 
+      {phase === "planning" && myColor && (inCheckAtStart || inCheckAfterPlan) && (
+        <div
+          className={`mb-3 rounded-2xl border px-4 py-3 text-sm ${
+            inCheckAfterPlan
+              ? "border-rose-500/30 bg-rose-950/30 text-rose-100"
+              : "border-emerald-500/30 bg-emerald-950/30 text-emerald-100"
+          }`}
+        >
+          {inCheckAfterPlan ? (
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold">Sei in scacco</div>
+                <div className="mt-1 text-[12px] opacity-90">
+                  Devi pianificare una mossa legale per parare lo scacco (non puoi passare).
+                </div>
+              </div>
+              <span className="rounded-full border border-rose-500/30 bg-rose-950/40 px-3 py-1 text-[11px]">
+                Check
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold">Scacco parato nel piano</div>
+                <div className="mt-1 text-[12px] opacity-90">
+                  La tua sequenza attuale esce dallo scacco.
+                </div>
+              </div>
+              <span className="rounded-full border border-emerald-500/30 bg-emerald-950/40 px-3 py-1 text-[11px]">
+                OK
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       {phase === "resolution" && (
         <p className="mb-3 text-center text-sm text-slate-400">
           Risoluzione — round {roundIndex + 1}
@@ -505,44 +606,16 @@ export function GamePage() {
         <div className="w-full lg:w-80">
           <RoundHistoryPanel
             rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
+            cursor={historyCursor}
+            totalFens={historyFens.length}
+            onBack={goHistoryBack}
+            onForward={goHistoryForward}
             onSelectFen={(fen) => {
               const idx = historyFens.findLastIndex((f) => f === fen);
               if (idx >= 0) setHistoryCursor(idx);
             }}
           />
         </div>
-      </div>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <button
-          type="button"
-          className="rounded-lg bg-slate-800 px-3 py-2 text-xs disabled:opacity-40"
-          onClick={() => {
-            if (historyFens.length === 0) return;
-            setHistoryCursor((cur) => {
-              const next = cur == null ? historyFens.length - 1 : Math.max(0, cur - 1);
-              return next;
-            });
-          }}
-          disabled={historyFens.length === 0}
-        >
-          Indietro
-        </button>
-        <button
-          type="button"
-          className="rounded-lg bg-slate-800 px-3 py-2 text-xs disabled:opacity-40"
-          onClick={() => {
-            if (historyFens.length === 0) return;
-            setHistoryCursor((cur) => {
-              if (cur == null) return null;
-              const next = cur + 1;
-              return next >= historyFens.length ? null : next;
-            });
-          }}
-          disabled={historyFens.length === 0 || historyCursor == null}
-        >
-          Avanti
-        </button>
       </div>
 
       {viewingHistory && (
@@ -607,6 +680,10 @@ export function GamePage() {
 
 function RoundHistoryPanel({
   rounds,
+  cursor,
+  totalFens,
+  onBack,
+  onForward,
   onSelectFen,
 }: {
   rounds: Array<{
@@ -619,13 +696,50 @@ function RoundHistoryPanel({
         }
       | Array<{ fenAfter: string; whiteMove: string; blackMove: string }>;
   }>;
+  cursor: number | null;
+  totalFens: number;
+  onBack: () => void;
+  onForward: () => void;
   onSelectFen: (fen: string) => void;
 }) {
+  const canBack = totalFens > 0;
+  const canForward = totalFens > 0 && cursor != null;
+  const modeLabel =
+    totalFens === 0
+      ? ""
+      : cursor == null
+        ? "Live"
+        : `Storico: ${Math.min(totalFens, cursor + 1)}/${totalFens}`;
   return (
     <div className="rounded-2xl border border-white/10 bg-slate-950 p-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-100">Round precedenti</h2>
-        <span className="text-[11px] text-slate-500">{rounds.length}</span>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline gap-2">
+          <h2 className="text-sm font-semibold text-slate-100">Round precedenti</h2>
+          {modeLabel && <span className="text-[11px] text-slate-500">{modeLabel}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-slate-900 text-sm text-slate-200 disabled:opacity-30"
+            onClick={onBack}
+            disabled={!canBack}
+            aria-label="Storico indietro (freccia sinistra)"
+            title="Indietro (←)"
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-slate-900 text-sm text-slate-200 disabled:opacity-30"
+            onClick={onForward}
+            disabled={!canForward}
+            aria-label="Storico avanti (freccia destra)"
+            title="Avanti (→)"
+          >
+            →
+          </button>
+          <span className="text-[11px] text-slate-500">{rounds.length}</span>
+        </div>
       </div>
       <div className="mt-2 max-h-[40dvh] space-y-2 overflow-auto pr-1 lg:max-h-[min(62dvh,640px)]">
         {rounds.length === 0 && (

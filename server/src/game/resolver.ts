@@ -4,6 +4,15 @@ const EMPTY: PlannedMoveInput = { from: "", to: "" };
 
 export type PlannedMoveInput = { from: string; to: string };
 
+function withFenTurn(fen: string, color: Color): string {
+  // FEN: "board activeColor castling ep halfmove fullmove"
+  // We only need move generation for a given side; don't use chess.js null-move based turn flips.
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length < 2) return fen;
+  parts[1] = color;
+  return parts.join(" ");
+}
+
 function normalizeSquare(s: string): Square | null {
   if (!s || typeof s !== "string") return null;
   const t = s.trim().toLowerCase();
@@ -18,8 +27,7 @@ function isPass(m: PlannedMoveInput): boolean {
 /** Chess.js only lists moves for the side to move; align turn for validation. */
 function forkForSide(fen: string, color: Color): Chess {
   const c = new Chess();
-  c.load(fen);
-  c.setTurn(color);
+  c.load(withFenTurn(fen, color));
   return c;
 }
 

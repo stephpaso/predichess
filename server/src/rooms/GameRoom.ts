@@ -411,7 +411,19 @@ export class GameRoom extends Room<PredictChessState> {
       snap.captures.clear();
       for (const c of step.captures ?? []) snap.captures.push(c);
       this.state.lastResolutionSteps.push(snap);
-      round.steps.push(snap);
+
+      // Colyseus Schema children must not be referenced from two parents.
+      // `lastResolutionSteps` drives the current animation; `round.steps` is persisted history.
+      const hist = new StepSnapshot();
+      hist.fenAfter = snap.fenAfter;
+      hist.whiteMove = snap.whiteMove;
+      hist.blackMove = snap.blackMove;
+      hist.whiteApplied = snap.whiteApplied;
+      hist.blackApplied = snap.blackApplied;
+      hist.collision = snap.collision;
+      hist.captures.clear();
+      for (const c of snap.captures.toArray()) hist.captures.push(c);
+      round.steps.push(hist);
 
       if (step.gameOver && step.winner) {
         this.state.fen = fen;
