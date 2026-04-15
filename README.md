@@ -63,22 +63,20 @@ Le regole si basano sugli scacchi classici, ma con un twist fondamentale:
 
 1. **Clona la repository:**
   ```bash
-    git clone https://github.com/tuo-username/predict-chess.git
-    cd predict-chess
+    git clone https://github.com/stephpaso/predichess.git
+    cd predichess
   ```
 2. **Installa le dipendenze (Monorepo):**
   ```bash
     npm install
   ```
-3. **Avvia il Server:**
+3. **Build command:**
   ```bash
-    cd server
-    npm run start
+    npm ci && npm run build
   ```
-4. **Avvia il Client:**
+4. **Start command:**
   ```bash
-    cd client
-    npm run dev
+    npm run start
   ```
 
 ---
