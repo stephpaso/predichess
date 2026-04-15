@@ -15,6 +15,8 @@ export class StepSnapshot extends Schema {
   @type("string") fenAfter: string = "";
   @type("string") whiteMove: string = ""; // "e2e4" (from+to) or ""
   @type("string") blackMove: string = "";
+  @type("boolean") whiteApplied: boolean = false;
+  @type("boolean") blackApplied: boolean = false;
   @type("boolean") collision: boolean = false;
   @type(["string"]) captures = new ArraySchema<string>(); // e.g. ["b:p@e4"]
 }

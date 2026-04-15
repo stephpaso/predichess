@@ -88,10 +88,13 @@ export type ResolutionStepResult = {
   winner: "" | "white" | "black" | "draw";
   collision: boolean;
   captures: string[];
+  whiteApplied: boolean;
+  blackApplied: boolean;
 };
 
 /**
- * One simultaneous step: validate vs `fenBefore`, then resolve collisions, then apply white then black.
+ * One step with priority: validate+apply White first, then validate+apply Black on updated FEN.
+ * Invalid moves are silently discarded (but reported via whiteApplied/blackApplied).
  */
 export function resolveOneStep(
   fenBefore: string,
@@ -107,59 +110,86 @@ export function resolveOneStep(
   const bf = bPass ? null : normalizeSquare(black.from)!;
   const bt = bPass ? null : normalizeSquare(black.to)!;
 
-  let wValid = false;
-  let bValid = false;
-  if (!wPass && wf && wt) {
-    wValid = isMoveLegalForSide(fen, wf, wt, "w");
-  }
-  if (!bPass && bf && bt) {
-    bValid = isMoveLegalForSide(fen, bf, bt, "b");
-  }
-
-  let collision = false;
+  let collision = false; // kept for UI backward-compat; sequential resolution makes it mostly irrelevant
   const captures: string[] = [];
+  let whiteApplied = false;
+  let blackApplied = false;
 
-  if (wValid && bValid && wt === bt && wf && bf && wt) {
-    const wKing = pieceTypeAt(fen, wf) === "k";
-    const bKing = pieceTypeAt(fen, bf) === "k";
-    if (!(wKing && bKing)) {
-      collision = true;
-      fen = applyMutualDestruction(fen, wf, bf, wt);
-      captures.push(`w:*@${wt}`, `b:*@${wt}`);
-    }
-  } else {
-    if (wValid && wf && wt) {
+  // WHITE first
+  if (!wPass && wf && wt) {
+    const wLegal = isMoveLegalForSide(fen, wf, wt, "w");
+    const wPiece = forkForSide(fen, "w").get(wf);
+    console.log(
+      `[resolveOneStep] WHITE from=${wf} to=${wt} legal=${wLegal} piece=${wPiece ? `${wPiece.color}${wPiece.type}` : "none"} fen=${fen}`
+    );
+    if (wLegal) {
       const next = applySanMove(fen, wf, wt, "w");
+      console.log(`[resolveOneStep] WHITE move result=`, next);
       if (next?.fen) {
         fen = next.fen;
+        whiteApplied = true;
         if (next.capture) captures.push(next.capture);
       }
+    } else {
+      console.log(`[resolveOneStep] WHITE rejected: not in moves() list`);
     }
-    const mid = kingCaptureWinner(fen);
-    if (mid) {
-      return {
-        fenAfter: fen,
-        gameOver: true,
-        winner: mid,
-        collision,
-        captures,
-      };
-    }
-    if (bValid && bf && bt) {
+  }
+
+  const mid = kingCaptureWinner(fen);
+  if (mid) {
+    return {
+      fenAfter: fen,
+      gameOver: true,
+      winner: mid,
+      collision,
+      captures,
+      whiteApplied,
+      blackApplied,
+    };
+  }
+
+  // BLACK second, on updated fen
+  if (!bPass && bf && bt) {
+    const bLegal = isMoveLegalForSide(fen, bf, bt, "b");
+    const bPiece = forkForSide(fen, "b").get(bf);
+    console.log(
+      `[resolveOneStep] BLACK from=${bf} to=${bt} legal=${bLegal} piece=${bPiece ? `${bPiece.color}${bPiece.type}` : "none"} fen=${fen}`
+    );
+    if (bLegal) {
       const next = applySanMove(fen, bf, bt, "b");
+      console.log(`[resolveOneStep] BLACK move result=`, next);
       if (next?.fen) {
         fen = next.fen;
+        blackApplied = true;
         if (next.capture) captures.push(next.capture);
       }
+    } else {
+      console.log(`[resolveOneStep] BLACK rejected: not in moves() list`);
     }
   }
 
   const end = kingCaptureWinner(fen);
   if (end) {
-    return { fenAfter: fen, gameOver: true, winner: end, collision, captures };
+    return {
+      fenAfter: fen,
+      gameOver: true,
+      winner: end,
+      collision,
+      captures,
+      whiteApplied,
+      blackApplied,
+    };
   }
 
-  return { fenAfter: fen, gameOver: false, winner: "", collision, captures };
+  return {
+    fenAfter: fen,
+    gameOver: false,
+    winner: "",
+    collision,
+    captures,
+    whiteApplied,
+    blackApplied,
+  };
 }
 
 export function padMoves(moves: PlannedMoveInput[]): PlannedMoveInput[] {

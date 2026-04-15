@@ -258,6 +258,8 @@ export class GameRoom extends Room<PredictChessState> {
       snap.fenAfter = fen;
       snap.whiteMove = wm[i]?.from && wm[i]?.to ? `${wm[i]!.from}${wm[i]!.to}` : "";
       snap.blackMove = bm[i]?.from && bm[i]?.to ? `${bm[i]!.from}${bm[i]!.to}` : "";
+      snap.whiteApplied = !!step.whiteApplied;
+      snap.blackApplied = !!step.blackApplied;
       snap.collision = !!step.collision;
       snap.captures.clear();
       for (const c of step.captures ?? []) snap.captures.push(c);

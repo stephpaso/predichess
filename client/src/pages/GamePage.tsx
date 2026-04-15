@@ -48,18 +48,26 @@ export function GamePage() {
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
   const animTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
+  const prevPhaseRef = useRef<string>("lobby");
+  const prevRoundRef = useRef<number>(0);
 
   const orientation = myColor === "b" ? "black" : "white";
 
   const applyState = useCallback((s: PredictChessState, sessionId: string) => {
+    const nextPhase = s.phase ?? "lobby";
+    const nextRound = s.roundIndex ?? 0;
+    const prevPhase = prevPhaseRef.current;
+    const prevRound = prevRoundRef.current;
+    prevPhaseRef.current = nextPhase;
+    prevRoundRef.current = nextRound;
+
     setPhase(s.phase ?? "lobby");
     if (s.fen) setServerFen(s.fen);
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
-    setRoundIndex(s.roundIndex ?? 0);
+    setRoundIndex(nextRound);
 
     // First Colyseus sync can omit nested Schema fields briefly ("refId" hydration).
     const players = s.players;
@@ -70,16 +78,23 @@ export function GamePage() {
     if (me?.color === "white") setMyColor("w");
     else if (me?.color === "black") setMyColor("b");
 
-    if (s.phase === "planning") {
+    if (nextPhase === "planning") {
       const wm = s.whiteMoves?.toArray?.() ?? [];
       const bm = s.blackMoves?.toArray?.() ?? [];
       const raw = me?.color === "black" ? bm : wm;
-      setPlan(planFromState(raw));
+      // New planning phase: reset local plan to empty, aligned to fresh serverFen.
+      const isNewPlanning = prevPhase !== "planning" || nextRound !== prevRound;
+      setPlan(isNewPlanning ? EMPTY_PLAN.map((p) => ({ ...p })) : planFromState(raw));
+      if (isNewPlanning) {
+        setActiveSlot(0);
+        setPickFrom(null);
+        setHistoryCursor(null);
+      }
       if (me?.color === "white") setLocked(s.whiteLocked);
       else if (me?.color === "black") setLocked(s.blackLocked);
     }
 
-    if (s.phase === "planning" || s.phase === "lobby") {
+    if (nextPhase === "planning" || nextPhase === "lobby") {
       if (s.fen) setDisplayFen(s.fen);
     }
   }, []);
@@ -99,14 +114,21 @@ export function GamePage() {
       sessionId: string
     ) => {
       if (!msg) return;
-      setPhase(msg.phase ?? "lobby");
+      const nextPhase = msg.phase ?? "lobby";
+      const nextRound = msg.roundIndex ?? 0;
+      const prevPhase = prevPhaseRef.current;
+      const prevRound = prevRoundRef.current;
+      prevPhaseRef.current = nextPhase;
+      prevRoundRef.current = nextRound;
+
+      setPhase(nextPhase);
       if (msg.fen) {
         setServerFen(msg.fen);
-        if (msg.phase === "planning" || msg.phase === "lobby") setDisplayFen(msg.fen);
+        if (nextPhase === "planning" || nextPhase === "lobby") setDisplayFen(msg.fen);
       }
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
-      setRoundIndex(msg.roundIndex ?? 0);
+      setRoundIndex(nextRound);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
         msg.players ?? [];
       setPlayersCount(players.length);
@@ -115,6 +137,16 @@ export function GamePage() {
       else if (me?.color === "black") setMyColor("b");
       if (me?.color === "white") setLocked(!!msg.whiteLocked);
       if (me?.color === "black") setLocked(!!msg.blackLocked);
+
+      if (nextPhase === "planning") {
+        const isNewPlanning = prevPhase !== "planning" || nextRound !== prevRound;
+        if (isNewPlanning) {
+          setPlan(EMPTY_PLAN.map((p) => ({ ...p })));
+          setActiveSlot(0);
+          setPickFrom(null);
+          setHistoryCursor(null);
+        }
+      }
     },
     []
   );
@@ -185,6 +217,8 @@ export function GamePage() {
     };
   }, [phase, room, roundIndex]);
 
+  // (planning reset is handled inside applyState/applyStatus on phase transition)
+
   function computePlanningFen(baseFen: string, nextPlan: Planned[], color: Color): string {
     let fen = baseFen;
     for (const m of nextPlan) {
@@ -228,13 +262,9 @@ export function GamePage() {
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
   const effectiveBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
 
-  const movedPieceSquares = useMemo(() => {
-    const s = new Set<Square>();
-    for (const m of plan) {
-      if (m.from && m.to) s.add(m.to);
-    }
-    return s;
-  }, [plan]);
+  function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
+    return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
+  }
 
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => {
@@ -256,35 +286,21 @@ export function GamePage() {
 
   function onPieceDrop(sourceSquare: Square, targetSquare: Square): boolean {
     if (!canEditPlan || !myColor || viewingHistory) return false;
-    if (movedPieceSquares.has(sourceSquare)) {
-      setToast("Quel pezzo è già stato mosso in questo round.");
-      return false;
-    }
     const slot = plan[activeSlot];
     if (slot.from && slot.to) {
       return false;
     }
-    const legal = isMoveLegalForSide(serverFen, sourceSquare, targetSquare, myColor);
+    const baseFen = fenBeforeSlot(serverFen, plan, myColor, activeSlot);
+    const legal = isMoveLegalForSide(baseFen, sourceSquare, targetSquare, myColor);
     if (!legal) return false;
 
     setPlan((prev) => {
       const next = prev.map((p) => ({ ...p }));
-      const s = next[activeSlot];
-      if (!s.from) {
-        s.from = sourceSquare;
-        s.to = targetSquare;
-      } else {
-        s.to = targetSquare;
-      }
+      next[activeSlot] = { from: sourceSquare, to: targetSquare };
+      const nextEmpty = findNextEmptySlot(next, activeSlot + 1);
+      if (nextEmpty != null) setActiveSlot(nextEmpty);
       return next;
     });
-    const nextPlan = plan.map((p, i) =>
-      i === activeSlot ? { from: sourceSquare, to: targetSquare } : { ...p }
-    );
-    // If the active slot is now complete, advance to the next empty slot.
-    // (Uses the same nextPlan computed above.)
-    const nextEmpty = findNextEmptySlot(nextPlan, activeSlot + 1);
-    if (nextEmpty != null) setActiveSlot(nextEmpty);
     return true;
   }
 
@@ -316,7 +332,7 @@ export function GamePage() {
     myColor === "w" ? "Bianco" : myColor === "b" ? "Nero" : "—";
 
   return (
-    <div className="mx-auto flex min-h-[100dvh] max-w-lg flex-col px-3 pb-8 pt-6">
+    <div className="mx-auto flex min-h-[100dvh] max-w-5xl flex-col px-3 pb-8 pt-6">
       {toast && (
         <div className="fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full bg-slate-900/90 px-4 py-2 text-xs text-slate-100 shadow-lg ring-1 ring-white/10">
           {toast}
@@ -395,40 +411,41 @@ export function GamePage() {
         </button>
       )}
 
-      <div className="w-full max-w-[min(100vw-24px,420px)] self-center">
-        <Chessboard
-          options={{
-            position: effectiveBoardFen,
-            boardOrientation: orientation,
-            allowDragging: !!canEditPlan && !viewingHistory,
-            onSquareClick: ({ square }) => {
-              const sq = square as Square;
-              if (!canEditPlan || !myColor || viewingHistory) return;
-              if (!pickFrom) {
-                if (movedPieceSquares.has(sq)) {
-                  setToast("Quel pezzo è già stato mosso in questo round.");
+      <div className="mt-1 flex w-full flex-col gap-3 lg:flex-row lg:items-start lg:justify-center">
+        <div className="w-full max-w-[min(100vw-24px,420px)] self-center">
+          <Chessboard
+            options={{
+              position: effectiveBoardFen,
+              boardOrientation: orientation,
+              allowDragging: !!canEditPlan && !viewingHistory,
+              onSquareClick: ({ square }) => {
+                const sq = square as Square;
+                if (!canEditPlan || !myColor || viewingHistory) return;
+                if (!pickFrom) {
+                  setPickFrom(sq);
                   return;
                 }
-                setPickFrom(sq);
-                return;
-              }
-              const ok = onPieceDrop(pickFrom, sq);
-              if (ok) setPickFrom(null);
-            },
-            onPieceDrop: ({ sourceSquare, targetSquare }) => {
-              if (!targetSquare) return false;
-              return onPieceDrop(sourceSquare as Square, targetSquare as Square);
-            },
-          }}
-        />
-      </div>
+                const ok = onPieceDrop(pickFrom, sq);
+                if (ok) setPickFrom(null);
+              },
+              onPieceDrop: ({ sourceSquare, targetSquare }) => {
+                if (!targetSquare) return false;
+                return onPieceDrop(sourceSquare as Square, targetSquare as Square);
+              },
+            }}
+          />
+        </div>
 
-      {phase === "planning" && myColor && (
-        <ManualMove
-          disabled={!canEditPlan || viewingHistory}
-          onSubmit={(from, to) => onPieceDrop(from, to)}
-        />
-      )}
+        <div className="w-full lg:w-80">
+          <RoundHistoryPanel
+            rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
+            onSelectFen={(fen) => {
+              const idx = historyFens.findLastIndex((f) => f === fen);
+              if (idx >= 0) setHistoryCursor(idx);
+            }}
+          />
+        </div>
+      </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
         <button
@@ -444,14 +461,6 @@ export function GamePage() {
           disabled={historyFens.length === 0}
         >
           Indietro
-        </button>
-        <button
-          type="button"
-          className="rounded-lg bg-slate-800 px-3 py-2 text-xs disabled:opacity-40"
-          onClick={() => setHistoryOpen(true)}
-          disabled={historyFens.length === 0}
-        >
-          Storico
         </button>
         <button
           type="button"
@@ -474,59 +483,6 @@ export function GamePage() {
         <p className="mt-2 text-center text-[11px] text-slate-500">
           Modalità storico: input mosse disabilitato ({historyCursor! + 1}/{historyFens.length})
         </p>
-      )}
-
-      {historyOpen && (
-        <div className="fixed inset-0 z-40 bg-black/50" onClick={() => setHistoryOpen(false)}>
-          <div
-            className="absolute bottom-0 left-0 right-0 max-h-[70dvh] rounded-t-2xl border border-white/10 bg-slate-950 p-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-100">Storico</h2>
-              <button
-                type="button"
-                className="rounded-lg bg-slate-800 px-3 py-1 text-xs"
-                onClick={() => setHistoryOpen(false)}
-              >
-                Chiudi
-              </button>
-            </div>
-            <div className="space-y-2 overflow-auto pr-1">
-              {(room?.state?.resolvedRounds?.toArray?.() ?? []).map((r, ri) => {
-                const steps = r.steps?.toArray?.() ?? [];
-                const lastFen = steps.length ? steps[steps.length - 1].fenAfter : r.fenAfter;
-                const anyCollision = steps.some((s) => !!s.collision);
-                const captures = steps.flatMap((s) => s.captures?.toArray?.() ?? []);
-                return (
-                  <button
-                    key={ri}
-                    type="button"
-                    className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-xs"
-                    onClick={() => {
-                      const idx = historyFens.findLastIndex((f) => f === lastFen);
-                      if (idx >= 0) setHistoryCursor(idx);
-                      setHistoryOpen(false);
-                    }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-slate-200">Round {r.roundIndex + 1}</span>
-                      <span className="text-slate-500">
-                        {anyCollision ? "collisione" : "—"}
-                        {captures.length ? ` · catture ${captures.length}` : ""}
-                      </span>
-                    </div>
-                    <div className="mt-1 font-mono text-[11px] text-slate-500">
-                      {steps
-                        .map((s) => `${s.whiteMove || "—"}/${s.blackMove || "—"}`)
-                        .join(" · ")}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
       )}
 
       {phase === "planning" && myColor && (
@@ -580,56 +536,63 @@ export function GamePage() {
   );
 }
 
-function ManualMove({
-  disabled,
-  onSubmit,
+function RoundHistoryPanel({
+  rounds,
+  onSelectFen,
 }: {
-  disabled: boolean;
-  onSubmit: (from: Square, to: Square) => boolean;
+  rounds: Array<{
+    roundIndex: number;
+    fenBefore: string;
+    fenAfter: string;
+    steps?:
+      | {
+          toArray?: () => Array<{ fenAfter: string; whiteMove: string; blackMove: string }>;
+        }
+      | Array<{ fenAfter: string; whiteMove: string; blackMove: string }>;
+  }>;
+  onSelectFen: (fen: string) => void;
 }) {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
   return (
-    <div className="mt-3 grid grid-cols-[1fr_1fr_auto] items-end gap-2">
-      <label className="text-[11px] text-slate-500">
-        Da
-        <input
-          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-2 font-mono text-sm text-slate-100 outline-none ring-indigo-500 focus:ring-2 disabled:opacity-40"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          placeholder="e2"
-          maxLength={2}
-          disabled={disabled}
-        />
-      </label>
-      <label className="text-[11px] text-slate-500">
-        A
-        <input
-          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-2 font-mono text-sm text-slate-100 outline-none ring-indigo-500 focus:ring-2 disabled:opacity-40"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          placeholder="e4"
-          maxLength={2}
-          disabled={disabled}
-        />
-      </label>
-      <button
-        type="button"
-        className="mb-[2px] rounded-lg bg-slate-800 px-3 py-2 text-xs disabled:opacity-40"
-        disabled={disabled}
-        onClick={() => {
-          const f = from.trim().toLowerCase();
-          const t = to.trim().toLowerCase();
-          if (!/^[a-h][1-8]$/.test(f) || !/^[a-h][1-8]$/.test(t)) return;
-          const ok = onSubmit(f as Square, t as Square);
-          if (ok) {
-            setFrom("");
-            setTo("");
-          }
-        }}
-      >
-        Inserisci
-      </button>
+    <div className="rounded-2xl border border-white/10 bg-slate-950 p-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-100">Round precedenti</h2>
+        <span className="text-[11px] text-slate-500">{rounds.length}</span>
+      </div>
+      <div className="mt-2 max-h-[40dvh] space-y-2 overflow-auto pr-1 lg:max-h-[min(62dvh,640px)]">
+        {rounds.length === 0 && (
+          <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>
+        )}
+        {rounds.map((r, ri) => {
+          const steps =
+            (Array.isArray(r.steps) ? r.steps : r.steps?.toArray?.()) ?? [];
+          const movesText = steps
+            .map((s, i) => {
+              const w = s.whiteMove
+                ? `Bianco ${s.whiteMove.slice(0, 2)}→${s.whiteMove.slice(2)}`
+                : "Bianco —";
+              const b = s.blackMove
+                ? `Nero ${s.blackMove.slice(0, 2)}→${s.blackMove.slice(2)}`
+                : "Nero —";
+              return `S${i + 1}: ${w}, ${b}`;
+            })
+            .join(" · ");
+          const lastFen = steps.length ? steps[steps.length - 1].fenAfter : r.fenAfter;
+          return (
+            <button
+              key={ri}
+              type="button"
+              className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-left text-xs"
+              onClick={() => onSelectFen(lastFen)}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-slate-200">Round {r.roundIndex + 1}</span>
+                <span className="text-slate-500">vai</span>
+              </div>
+              <div className="mt-1 text-[11px] text-slate-500">{movesText || "—"}</div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
