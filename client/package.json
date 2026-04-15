@@ -13,7 +13,7 @@
     "@colyseus/schema": "^2.0.37",
     "@tailwindcss/vite": "^4.2.2",
     "chess.js": "^1.4.0",
-    "colyseus.js": "^0.16.22",
+    "colyseus.js": "^0.15.0",
     "react": "^19.2.4",
     "react-chessboard": "^5.10.0",
     "react-dom": "^19.2.4",

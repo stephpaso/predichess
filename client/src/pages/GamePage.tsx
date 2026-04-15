@@ -3,7 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
 import type { Room } from "colyseus.js";
-import { formatJoinError, joinPredictRoom } from "../lib/colyseus";
+import {
+  consumePredictReservation,
+  formatJoinError,
+  joinPredictRoom,
+  releasePredictRoom,
+} from "../lib/colyseus";
 import type { PredictChessState } from "../schema/PredictChessState";
 import { isMoveLegalForSide } from "../game/validation";
 
@@ -35,6 +40,7 @@ export function GamePage() {
   const [myColor, setMyColor] = useState<Color | null>(null);
   const [winner, setWinner] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
+  const [playersCount, setPlayersCount] = useState(0);
   const [plan, setPlan] = useState<Planned[]>(() =>
     EMPTY_PLAN.map((p) => ({ ...p }))
   );
@@ -54,6 +60,7 @@ export function GamePage() {
 
     // First Colyseus sync can omit nested Schema fields briefly ("refId" hydration).
     const players = s.players;
+    setPlayersCount(players?.size ?? 0);
     if (!players) return;
 
     const me = [...players.values()].find((p) => p.sessionId === sessionId);
@@ -74,23 +81,66 @@ export function GamePage() {
     }
   }, []);
 
+  const applyStatus = useCallback(
+    (
+      msg: {
+        phase?: string;
+        fen?: string;
+        timerMs?: number;
+        roundIndex?: number;
+        winner?: string;
+        whiteLocked?: boolean;
+        blackLocked?: boolean;
+        players?: Array<{ sessionId: string; color: string; connected: boolean }>;
+      },
+      sessionId: string
+    ) => {
+      if (!msg) return;
+      setPhase(msg.phase ?? "lobby");
+      if (msg.fen) {
+        setFen(msg.fen);
+        if (msg.phase === "planning" || msg.phase === "lobby") setDisplayFen(msg.fen);
+      }
+      setTimerMs(msg.timerMs ?? 0);
+      setWinner(msg.winner ?? "");
+      setRoundIndex(msg.roundIndex ?? 0);
+      const players: Array<{ sessionId: string; color: string; connected: boolean }> =
+        msg.players ?? [];
+      setPlayersCount(players.length);
+      const me = players.find((p) => p.sessionId === sessionId);
+      if (me?.color === "white") setMyColor("w");
+      else if (me?.color === "black") setMyColor("b");
+      if (me?.color === "white") setLocked(!!msg.whiteLocked);
+      if (me?.color === "black") setLocked(!!msg.blackLocked);
+    },
+    []
+  );
+
   useEffect(() => {
     let joined: Room<PredictChessState> | null = null;
     let cancelled = false;
 
     (async () => {
       try {
-        const r = await joinPredictRoom(roomId);
+        const resKey = `predichess:reservation:${roomId}`;
+        const reservationRaw = sessionStorage.getItem(resKey);
+        if (reservationRaw) sessionStorage.removeItem(resKey);
+
+        const r = reservationRaw
+          ? await consumePredictReservation(JSON.parse(reservationRaw))
+          : await joinPredictRoom(roomId);
         if (cancelled) {
-          void r.leave();
+          void releasePredictRoom(roomId, r);
           return;
         }
         joined = r;
         setRoom(r);
         applyState(r.state, r.sessionId);
-        r.onStateChange(() => {
-          applyState(r.state, r.sessionId);
+        r.onStateChange((state) => {
+          applyState(state, r.sessionId);
         });
+        r.onMessage("status", (m) => applyStatus(m, r.sessionId));
+        r.send("status_req");
       } catch (err) {
         console.error("joinPredictRoom", err);
         if (!cancelled) setError(formatJoinError(err));
@@ -99,10 +149,10 @@ export function GamePage() {
 
     return () => {
       cancelled = true;
-      if (joined) void joined.leave();
+      if (joined) void releasePredictRoom(roomId, joined);
       if (animTimer.current) clearInterval(animTimer.current);
     };
-  }, [roomId, applyState]);
+  }, [roomId, applyState, applyStatus]);
 
   useEffect(() => {
     if (!room?.state || phase !== "resolution") return;
@@ -184,17 +234,29 @@ export function GamePage() {
     room?.state?.players != null &&
     room.state.players.size < 2;
 
+  const myLabel =
+    myColor === "w" ? "Bianco" : myColor === "b" ? "Nero" : "—";
+
   return (
     <div className="mx-auto flex min-h-[100dvh] max-w-lg flex-col px-3 pb-8 pt-6">
       <div className="mb-4 flex items-center justify-between gap-2">
         <Link to="/" className="text-sm text-indigo-400">
           Menu
         </Link>
-        {roomId && (
-          <span className="font-mono text-xs text-slate-500">
-            Stanza {roomId}
+        <div className="flex flex-col items-end gap-1 text-right">
+          {roomId && (
+            <span className="font-mono text-xs text-slate-500">
+              Stanza {roomId}
+            </span>
+          )}
+          <span className="text-[11px] text-slate-500">
+            Fase: <span className="font-mono text-slate-300">{phase}</span> ·{" "}
+            <span className="font-mono text-slate-300">
+              {playersCount}/2
+            </span>{" "}
+            · Tu: <span className="font-mono text-slate-300">{myLabel}</span>
           </span>
-        )}
+        </div>
       </div>
 
       {error && <p className="text-red-400">{error}</p>}
@@ -202,6 +264,12 @@ export function GamePage() {
       {lobbyWait && (
         <p className="mb-4 text-center text-slate-400">
           In attesa del secondo giocatore…
+        </p>
+      )}
+
+      {!error && phase === "lobby" && playersCount === 2 && (
+        <p className="mb-4 text-center text-slate-400">
+          Entrambi connessi. Inizio partita…
         </p>
       )}
 

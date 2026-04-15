@@ -13,11 +13,32 @@ export class GameRoom extends Room<PredictChessState> {
   private planningEndsAt = 0;
   private timerInterval?: ReturnType<typeof setInterval>;
 
+  private buildStatus() {
+    return {
+      roomCode: this.roomCode,
+      phase: this.state.phase,
+      fen: this.state.fen,
+      timerMs: this.state.timerMs,
+      roundIndex: this.state.roundIndex,
+      winner: this.state.winner,
+      whiteLocked: this.state.whiteLocked,
+      blackLocked: this.state.blackLocked,
+      players: [...this.state.players.values()].map((p) => ({
+        sessionId: p.sessionId,
+        color: p.color,
+        connected: p.connected,
+      })),
+      lastResolutionSteps: this.state.lastResolutionSteps.toArray().map((s) => s.fenAfter),
+    };
+  }
+
+  private broadcastStatus() {
+    this.broadcast("status", this.buildStatus());
+  }
+
   onCreate(options: { roomCode?: string }) {
-    if (options?.roomCode) {
-      this.roomId = options.roomCode;
-    }
-    this.roomCode = this.roomId;
+    this.roomCode = options?.roomCode ?? this.roomId;
+    console.log(`[GameRoom] create roomId=${this.roomId} code=${this.roomCode}`);
     this.setState(new PredictChessState());
     this.state.phase = "lobby";
     this.state.fen = new Chess().fen();
@@ -31,9 +52,16 @@ export class GameRoom extends Room<PredictChessState> {
     this.onMessage("submit_plan", (client, message: { moves?: PlannedMoveInput[] }) => {
       this.handleSubmitPlan(client, message?.moves ?? []);
     });
+
+    this.onMessage("status_req", (client) => {
+      client.send("status", this.buildStatus());
+    });
   }
 
   onJoin(client: Client) {
+    console.log(
+      `[GameRoom] join roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
+    );
     const player = new Player();
     player.sessionId = client.sessionId;
     player.connected = true;
@@ -48,13 +76,18 @@ export class GameRoom extends Room<PredictChessState> {
     }
 
     this.state.players.set(client.sessionId, player);
+    this.broadcastStatus();
 
     if (this.clients.length === 2) {
+      console.log(`[GameRoom] beginMatch roomId=${this.roomId} code=${this.roomCode}`);
       this.beginMatch();
     }
   }
 
   onLeave(client: Client) {
+    console.log(
+      `[GameRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
+    );
     const p = this.state.players.get(client.sessionId);
     if (p) p.connected = false;
 
@@ -68,6 +101,7 @@ export class GameRoom extends Room<PredictChessState> {
     }
 
     this.state.players.delete(client.sessionId);
+    this.broadcastStatus();
   }
 
   onDispose() {
@@ -79,6 +113,9 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.fen = new Chess().fen();
     this.state.winner = "";
     this.state.roundIndex = 0;
+    console.log(
+      `[GameRoom] state->planning roomId=${this.roomId} code=${this.roomCode} (clients=${this.clients.length})`
+    );
     this.startPlanningPhase();
   }
 
@@ -91,14 +128,19 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.lastResolutionSteps.clear();
     this.planningEndsAt = Date.now() + PLAN_MS;
     this.state.timerMs = PLAN_MS;
+    console.log(
+      `[GameRoom] planning started roomId=${this.roomId} code=${this.roomCode} endsAt=${this.planningEndsAt}`
+    );
 
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = setInterval(() => this.tickPlanning(), TICK_MS);
+    this.broadcastStatus();
   }
 
   private tickPlanning() {
     const left = Math.max(0, this.planningEndsAt - Date.now());
     this.state.timerMs = left;
+    this.broadcastStatus();
 
     if (left <= 0) {
       if (this.timerInterval) clearInterval(this.timerInterval);
@@ -136,6 +178,7 @@ export class GameRoom extends Room<PredictChessState> {
       this.timerInterval = undefined;
       this.finalizePlanningAndResolve();
     }
+    this.broadcastStatus();
   }
 
   private finalizePlanningAndResolve() {
@@ -175,6 +218,7 @@ export class GameRoom extends Room<PredictChessState> {
   private runResolution() {
     this.state.phase = "resolution";
     this.state.lastResolutionSteps.clear();
+    this.broadcastStatus();
 
     let fen = this.state.fen;
     const wm = this.plannedToInput(this.state.whiteMoves);
@@ -222,5 +266,6 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.phase = "finished";
     this.state.winner = winner;
     this.state.timerMs = 0;
+    this.broadcastStatus();
   }
 }

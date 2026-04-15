@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { createMatchRoom } from "../lib/colyseus";
 
+const RES_KEY_PREFIX = "predichess:reservation:";
+
 export function CreateRoomPage() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
@@ -11,9 +13,15 @@ export function CreateRoomPage() {
     let cancelled = false;
     (async () => {
       try {
-        const { roomCode: code } = await createMatchRoom();
+        const { roomCode: code, reservation } = await createMatchRoom();
         if (!cancelled) {
           setRoomCode(code);
+          // Store host seat reservation so the first tab consumes it (avoids phantom reserved seat → "locked").
+          try {
+            sessionStorage.setItem(`${RES_KEY_PREFIX}${code}`, JSON.stringify(reservation));
+          } catch {
+            // ignore storage errors; fallback to normal join
+          }
           navigate(`/play/${code}`, { replace: true });
         }
       } catch {

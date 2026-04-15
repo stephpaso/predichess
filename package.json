@@ -10,6 +10,9 @@
     "build": "npm run build -w server && npm run build -w client",
     "lint": "npm run lint -w client --if-present && npm run lint -w server --if-present"
   },
+  "overrides": {
+    "@colyseus/schema": "2.0.37"
+  },
   "devDependencies": {
     "concurrently": "^9.1.2"
   }

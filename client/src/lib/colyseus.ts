@@ -35,26 +35,90 @@ export function getColyseusClient(): Client {
   return client;
 }
 
-/** One in-flight join per roomId so React Strict Mode / remounts do not double-join (fills maxClients → "locked"). */
-const joinFlights = new Map<string, Promise<Room<PredictChessState>>>();
+export type CreateRoomResponse = {
+  roomId: string;
+  roomCode: string;
+  reservation: unknown;
+};
 
-export async function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
-  const existing = joinFlights.get(roomId);
-  if (existing) return existing;
-
-  const promise = getColyseusClient()
-    .joinById<PredictChessState>(roomId)
-    .finally(() => {
-      joinFlights.delete(roomId);
-    });
-  joinFlights.set(roomId, promise);
-  return promise;
+export async function consumePredictReservation(reservation: unknown): Promise<Room<PredictChessState>> {
+  // colyseus.js types for seat reservations differ across versions; treat as unknown at runtime.
+  type SeatReservationParam = Parameters<Client["consumeSeatReservation"]>[0];
+  return getColyseusClient().consumeSeatReservation<PredictChessState>(
+    reservation as SeatReservationParam
+  );
 }
 
-export async function createMatchRoom(): Promise<{ roomId: string; roomCode: string }> {
+type JoinEntry = {
+  promise: Promise<Room<PredictChessState>>;
+  room?: Room<PredictChessState>;
+  refCount: number;
+};
+
+/**
+ * React StrictMode (dev) mounts/unmounts effects twice.
+ * If two components share the same in-flight join promise, the first cleanup may call `leave()`
+ * and disconnect the second mount. We keep a refCount and only leave when the last user releases.
+ */
+const joins = new Map<string, JoinEntry>();
+
+export async function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
+  const existing = joins.get(roomId);
+  if (existing) {
+    existing.refCount += 1;
+    return existing.room ? Promise.resolve(existing.room) : existing.promise;
+  }
+
+  // roomId here is the short roomCode used in the URL.
+  const resolvedRoomId = await (async () => {
+    const res = await fetch(`${apiBase}/match/resolve/${encodeURIComponent(roomId)}`);
+    if (!res.ok) throw new MatchMakeError(res.status, "room not found");
+    const data = (await res.json()) as { roomId?: string };
+    if (!data.roomId) throw new MatchMakeError(404, "room not found");
+    return data.roomId;
+  })();
+
+  const entry: JoinEntry = {
+    refCount: 1,
+    promise: getColyseusClient().joinById<PredictChessState>(resolvedRoomId),
+  };
+  joins.set(roomId, entry);
+
+  entry.promise
+    .then((room) => {
+      entry.room = room;
+      room.onLeave(() => {
+        const cur = joins.get(roomId);
+        if (cur?.room === room) joins.delete(roomId);
+      });
+      return room;
+    })
+    .catch(() => {
+      // On join failure, allow retries.
+      const cur = joins.get(roomId);
+      if (cur === entry) joins.delete(roomId);
+    });
+
+  return entry.promise;
+}
+
+export async function releasePredictRoom(roomId: string, room: Room<PredictChessState>) {
+  const entry = joins.get(roomId);
+  if (!entry) {
+    await room.leave();
+    return;
+  }
+  entry.refCount = Math.max(0, entry.refCount - 1);
+  if (entry.refCount === 0) {
+    joins.delete(roomId);
+    await room.leave();
+  }
+}
+
+export async function createMatchRoom(): Promise<CreateRoomResponse> {
   const res = await fetch(`${apiBase}/match/create`, { method: "POST" });
   if (!res.ok) throw new Error("create_failed");
-  return res.json() as Promise<{ roomId: string; roomCode: string }>;
+  return res.json() as Promise<CreateRoomResponse>;
 }
 
 export function formatJoinError(err: unknown): string {
