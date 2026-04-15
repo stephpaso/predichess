@@ -13,9 +13,12 @@ export class GameRoom extends Room<PredictChessState> {
   maxClients = 2;
   private roomCode: string = "";
   private planningEndsAt = 0;
+  private planningPaused = false;
+  private planningPausedRemainingMs = 0;
   private timerInterval?: ReturnType<typeof setInterval>;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
+  private pendingReconnections = new Set<string>();
 
   private buildStatus() {
     return {
@@ -71,20 +74,28 @@ export class GameRoom extends Room<PredictChessState> {
     console.log(
       `[GameRoom] join roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
     );
-    const player = new Player();
-    player.sessionId = client.sessionId;
-    player.connected = true;
-
-    const count = this.clients.length;
-    if (count === 1) {
-      player.color = "white";
-    } else if (count === 2) {
-      player.color = "black";
+    const existing = this.state.players.get(client.sessionId);
+    if (existing) {
+      existing.connected = true;
     } else {
-      player.color = "spectator";
+      const player = new Player();
+      player.sessionId = client.sessionId;
+      player.connected = true;
+
+      const count = this.clients.length;
+      if (count === 1) {
+        player.color = "white";
+      } else if (count === 2) {
+        player.color = "black";
+      } else {
+        player.color = "spectator";
+      }
+      this.state.players.set(client.sessionId, player);
     }
 
-    this.state.players.set(client.sessionId, player);
+    // If the client rejoined via allowReconnection, it's no longer pending.
+    this.pendingReconnections.delete(client.sessionId);
+    if (this.pendingReconnections.size === 0) this.autoDispose = true;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = undefined;
@@ -97,26 +108,44 @@ export class GameRoom extends Room<PredictChessState> {
     }
   }
 
-  onLeave(client: Client) {
+  async onLeave(client: Client, consented: boolean) {
     console.log(
       `[GameRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
     );
     const p = this.state.players.get(client.sessionId);
     if (p) p.connected = false;
+    this.broadcastStatus();
 
-    if (this.state.phase !== "finished" && this.state.phase !== "lobby") {
-      const left = p?.color;
-      if (left === "white") {
-        this.endGame("black", "disconnect");
-      } else if (left === "black") {
-        this.endGame("white", "disconnect");
+    // Temporary disconnect: allow up to 3 minutes for reconnection.
+    if (!consented) {
+      this.pendingReconnections.add(client.sessionId);
+      this.autoDispose = false;
+      try {
+        await this.allowReconnection(client, 180);
+        const rejoined = this.state.players.get(client.sessionId);
+        if (rejoined) rejoined.connected = true;
+        this.pendingReconnections.delete(client.sessionId);
+        if (this.pendingReconnections.size === 0) this.autoDispose = true;
+        this.broadcastStatus();
+        return;
+      } catch {
+        // reconnection window expired
+        this.pendingReconnections.delete(client.sessionId);
+        if (this.pendingReconnections.size === 0) this.autoDispose = true;
       }
     }
 
+    // Permanent leave (consented or reconnection timeout)
+    const leftColor = p?.color as "white" | "black" | undefined;
     this.state.players.delete(client.sessionId);
     this.broadcastStatus();
 
-    if (this.clients.length === 0 && !this.ending) {
+    if (this.state.phase !== "finished" && this.state.phase !== "lobby") {
+      if (leftColor === "white") this.endGame("black", "disconnect");
+      else if (leftColor === "black") this.endGame("white", "disconnect");
+    }
+
+    if (this.clients.length === 0 && !this.ending && this.pendingReconnections.size === 0) {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => {
         void this.disconnect();
@@ -149,6 +178,8 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.blackMoves.clear();
     this.state.lastResolutionSteps.clear();
     this.planningEndsAt = Date.now() + PLAN_MS;
+    this.planningPaused = false;
+    this.planningPausedRemainingMs = 0;
     this.state.timerMs = PLAN_MS;
     console.log(
       `[GameRoom] planning started roomId=${this.roomId} code=${this.roomCode} endsAt=${this.planningEndsAt}`
@@ -160,6 +191,26 @@ export class GameRoom extends Room<PredictChessState> {
   }
 
   private tickPlanning() {
+    const shouldPause =
+      [...this.state.players.values()].some(
+        (pl) => (pl.color === "white" || pl.color === "black") && pl.connected === false
+      );
+
+    if (shouldPause) {
+      if (!this.planningPaused) {
+        this.planningPausedRemainingMs = Math.max(0, this.planningEndsAt - Date.now());
+        this.planningPaused = true;
+      }
+      this.state.timerMs = this.planningPausedRemainingMs;
+      this.broadcastStatus();
+      return;
+    }
+
+    if (this.planningPaused) {
+      this.planningEndsAt = Date.now() + this.planningPausedRemainingMs;
+      this.planningPaused = false;
+    }
+
     const left = Math.max(0, this.planningEndsAt - Date.now());
     this.state.timerMs = left;
     this.broadcastStatus();
