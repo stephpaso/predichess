@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
 import type { Room } from "colyseus.js";
 import {
-  consumePredictReservation,
+  consumePredictReservationForCode,
   formatJoinError,
   joinPredictRoom,
+  joinPredictRoomByResolvedId,
   releasePredictRoom,
 } from "../lib/colyseus";
 import type { PredictChessState } from "../schema/PredictChessState";
@@ -41,6 +42,7 @@ function withFenTurn(fen: string, color: Color): string {
 
 export function GamePage() {
   const { roomId = "" } = useParams();
+  const [search] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<Room<PredictChessState> | null>(null);
   const [phase, setPhase] = useState<string>("lobby");
@@ -49,6 +51,7 @@ export function GamePage() {
   const [myColor, setMyColor] = useState<Color | null>(null);
   const [winner, setWinner] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
+  const [resolvedRoundsCount, setResolvedRoundsCount] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
   const [slotCount, setSlotCount] = useState(3);
   const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(3));
@@ -77,6 +80,7 @@ export function GamePage() {
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
     setRoundIndex(nextRound);
+    setResolvedRoundsCount(s.resolvedRounds?.length ?? 0);
     const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
     setSlotCount(slots);
 
@@ -141,6 +145,7 @@ export function GamePage() {
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
       setRoundIndex(nextRound);
+      setResolvedRoundsCount(room?.state?.resolvedRounds?.length ?? 0);
       const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
       setSlotCount(slots);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
@@ -162,7 +167,7 @@ export function GamePage() {
         }
       }
     },
-    [slotCount]
+    [slotCount, room?.state?.resolvedRounds?.length]
   );
 
   useEffect(() => {
@@ -171,13 +176,16 @@ export function GamePage() {
 
     (async () => {
       try {
+        const rid = String(search.get("rid") ?? "").trim();
         const resKey = `predichess:reservation:${roomId}`;
         const reservationRaw = sessionStorage.getItem(resKey);
         if (reservationRaw) sessionStorage.removeItem(resKey);
 
         const r = reservationRaw
-          ? await consumePredictReservation(JSON.parse(reservationRaw))
-          : await joinPredictRoom(roomId);
+          ? await consumePredictReservationForCode(roomId, JSON.parse(reservationRaw))
+          : rid
+            ? await joinPredictRoomByResolvedId(roomId, rid)
+            : await joinPredictRoom(roomId);
         if (cancelled) {
           void releasePredictRoom(roomId, r);
           return;
@@ -201,7 +209,7 @@ export function GamePage() {
       if (joined) void releasePredictRoom(roomId, joined);
       if (animTimer.current) clearInterval(animTimer.current);
     };
-  }, [roomId, applyState, applyStatus]);
+  }, [roomId, search, applyState, applyStatus]);
 
   useEffect(() => {
     if (!room?.state || phase !== "resolution") return;
@@ -292,7 +300,10 @@ export function GamePage() {
     };
   }, [plan, room, canEditPlan, myColor]);
 
-  const historyFens = useMemo(() => {
+  // Compute on each render; resolvedRounds is small and this avoids ArraySchema-in-place update edge cases.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _resolvedRoundsNonce = resolvedRoundsCount;
+  const historyFens = (() => {
     const rounds = room?.state?.resolvedRounds?.toArray?.() ?? [];
     const out: string[] = [];
     for (const r of rounds) {
@@ -302,7 +313,7 @@ export function GamePage() {
       }
     }
     return out;
-  }, [room, roundIndex, phase, room?.state?.resolvedRounds?.length]);
+  })();
 
   const viewingHistory =
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
@@ -331,7 +342,7 @@ export function GamePage() {
       if (!el) return false;
       const tag = (el.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return true;
-      if ((el as any).isContentEditable) return true;
+      if (el.isContentEditable) return true;
       return false;
     }
 
@@ -605,6 +616,7 @@ export function GamePage() {
 
         <div className="w-full lg:w-80">
           <RoundHistoryPanel
+            key={resolvedRoundsCount}
             rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
             cursor={historyCursor}
             totalFens={historyFens.length}

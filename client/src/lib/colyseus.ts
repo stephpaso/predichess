@@ -65,6 +65,35 @@ export async function consumePredictReservation(reservation: unknown): Promise<R
   );
 }
 
+/**
+ * Consume a reservation but also register it under the short roomCode key so
+ * StrictMode double-mount cleanup doesn't immediately disconnect the second mount.
+ */
+export async function consumePredictReservationForCode(
+  roomCode: string,
+  reservation: unknown
+): Promise<Room<PredictChessState>> {
+  const room = await consumePredictReservation(reservation);
+  const existing = joins.get(roomCode);
+  if (existing?.room) {
+    // If something already joined, prefer it and leave this one.
+    await room.leave();
+    existing.refCount += 1;
+    return existing.room;
+  }
+  const entry: JoinEntry = {
+    refCount: 1,
+    promise: Promise.resolve(room),
+    room,
+  };
+  joins.set(roomCode, entry);
+  room.onLeave(() => {
+    const cur = joins.get(roomCode);
+    if (cur?.room === room) joins.delete(roomCode);
+  });
+  return room;
+}
+
 type JoinEntry = {
   promise: Promise<Room<PredictChessState>>;
   room?: Room<PredictChessState>;
@@ -94,25 +123,38 @@ export async function joinPredictRoom(roomId: string): Promise<Room<PredictChess
     return data.roomId;
   })();
 
+  return joinPredictRoomByResolvedId(roomId, resolvedRoomId);
+}
+
+export async function joinPredictRoomByResolvedId(
+  roomCode: string,
+  resolvedRoomId: string
+): Promise<Room<PredictChessState>> {
+  const existing = joins.get(roomCode);
+  if (existing) {
+    existing.refCount += 1;
+    return existing.room ? Promise.resolve(existing.room) : existing.promise;
+  }
+
   const entry: JoinEntry = {
     refCount: 1,
     promise: getColyseusClient().joinById<PredictChessState>(resolvedRoomId),
   };
-  joins.set(roomId, entry);
+  joins.set(roomCode, entry);
 
   entry.promise
     .then((room) => {
       entry.room = room;
       room.onLeave(() => {
-        const cur = joins.get(roomId);
-        if (cur?.room === room) joins.delete(roomId);
+        const cur = joins.get(roomCode);
+        if (cur?.room === room) joins.delete(roomCode);
       });
       return room;
     })
     .catch(() => {
       // On join failure, allow retries.
-      const cur = joins.get(roomId);
-      if (cur === entry) joins.delete(roomId);
+      const cur = joins.get(roomCode);
+      if (cur === entry) joins.delete(roomCode);
     });
 
   return entry.promise;
@@ -126,13 +168,37 @@ export async function releasePredictRoom(roomId: string, room: Room<PredictChess
   }
   entry.refCount = Math.max(0, entry.refCount - 1);
   if (entry.refCount === 0) {
-    joins.delete(roomId);
-    await room.leave();
+    // React StrictMode can briefly drop refCount to 0 between the two mounts.
+    // Delay the actual leave to allow the second mount to re-acquire.
+    window.setTimeout(() => {
+      const cur = joins.get(roomId);
+      if (!cur) return;
+      if (cur.refCount !== 0) return;
+      joins.delete(roomId);
+      void room.leave();
+    }, 0);
   }
 }
 
 export async function createMatchRoom(options: Partial<MatchRoomOptions> = {}): Promise<CreateRoomResponse> {
   const res = await fetch(`${apiBase}/match/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  });
+  if (!res.ok) throw new Error("create_failed");
+  return res.json() as Promise<CreateRoomResponse>;
+}
+
+export type CreateBotRoomOptions = {
+  botElo: number;
+  color: "white" | "black" | "random";
+  predictiveMoves: number; // 1-5
+  turnTimeSec?: number; // optional (defaults server-side)
+};
+
+export async function createBotRoom(options: Partial<CreateBotRoomOptions> = {}): Promise<CreateRoomResponse> {
+  const res = await fetch(`${apiBase}/bot/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(options),

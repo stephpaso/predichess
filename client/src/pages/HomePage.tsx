@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { apiBase } from "../lib/colyseus";
 
 type Props = {
-  onBot: () => void;
+  onBot?: () => void;
 };
 
 export function HomePage({ onBot }: Props) {
@@ -112,7 +112,7 @@ export function HomePage({ onBot }: Props) {
       <div className="flex flex-1 flex-col gap-3">
         <button
           type="button"
-          onClick={onBot}
+          onClick={() => (onBot ? onBot() : navigate("/bot"))}
           className="rounded-2xl bg-slate-900 px-4 py-4 text-base font-medium text-white ring-1 ring-white/10 transition hover:bg-slate-800 active:scale-[0.99]"
         >
           Gioca contro Bot

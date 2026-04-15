@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "test:resolver": "tsx src/game/resolver.test.ts"
+    "test:resolver": "tsx src/game/resolver.test.ts",
+    "test:bot": "tsx src/bot/HeuristicEngine.test.ts"
   },
   "dependencies": {
     "@colyseus/core": "^0.15.57",
