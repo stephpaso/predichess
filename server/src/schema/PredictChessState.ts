@@ -13,6 +13,8 @@ export class PlannedMove extends Schema {
 
 export class StepSnapshot extends Schema {
   @type("string") fenAfter: string = "";
+  /** FEN after White's half-move in this step; empty if White passed or unchanged. */
+  @type("string") fenAfterWhite: string = "";
   @type("string") whiteMove: string = ""; // "e2e4" (from+to) or ""
   @type("string") blackMove: string = "";
   @type("boolean") whiteApplied: boolean = false;
@@ -41,10 +43,14 @@ export class PredictChessState extends Schema {
   @type("number") predictiveSlots: number = 3; // 1-5
   @type("boolean") isPublic: boolean = true;
   @type("string") hostColorPref: string = "random"; // white | black | random
+  /** "classic" | "shuffle" — shuffle starts from a random balanced midgame FEN. */
+  @type("string") gameMode: string = "classic";
 
   @type({ map: Player }) players = new MapSchema<Player>();
 
   @type("string") winner: string = "";
+  /** Human-readable end reason (e.g. anti-stall check rule). */
+  @type("string") gameOverReason: string = "";
 
   @filter(function (this: PredictChessState, client: { sessionId: string }) {
     const me = this.players.get(client.sessionId);
@@ -66,4 +72,7 @@ export class PredictChessState extends Schema {
   @type([StepSnapshot]) lastResolutionSteps = new ArraySchema<StepSnapshot>();
 
   @type([RoundSnapshot]) resolvedRounds = new ArraySchema<RoundSnapshot>();
+
+  /** Human-readable log lines, one per resolved round (and intra-round game end if any). */
+  @type(["string"]) historyLog = new ArraySchema<string>();
 }

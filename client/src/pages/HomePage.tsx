@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { normalizeRoomCode } from "../lib/colyseus";
+import { RulesModal } from "../components/RulesModal";
 import { apiBase } from "../lib/colyseus";
 
 type Props = {
-  onBot: () => void;
+  onBot?: () => void;
 };
 
 export function HomePage({ onBot }: Props) {
@@ -11,30 +13,18 @@ export function HomePage({ onBot }: Props) {
   const [params] = useSearchParams();
   const roomParam = useMemo(() => {
     const raw = params.get("room") ?? "";
-    const c = raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const c = normalizeRoomCode(raw);
     return c.length >= 4 ? c : "";
-  }, [params]);
-  const guest = useMemo(() => {
-    return (params.get("guest") ?? "") === "1";
   }, [params]);
 
   const [howOpen, setHowOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [stats, setStats] = useState<{ activeRooms: number; connectedUsers: number } | null>(null);
 
   useEffect(() => {
     if (!roomParam) return;
-    if (guest) {
-      try {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const k = localStorage.key(i) ?? "";
-          if (k.toLowerCase().includes("colyseus")) localStorage.removeItem(k);
-        }
-      } catch {
-        // ignore
-      }
-    }
-    navigate(`/play/${roomParam}`, { replace: true });
-  }, [roomParam, guest, navigate]);
+    navigate(`/room/${roomParam}`, { replace: true });
+  }, [roomParam, navigate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,7 +102,7 @@ export function HomePage({ onBot }: Props) {
       <div className="flex flex-1 flex-col gap-3">
         <button
           type="button"
-          onClick={onBot}
+          onClick={() => (onBot ? onBot() : navigate("/bot"))}
           className="rounded-2xl bg-slate-900 px-4 py-4 text-base font-medium text-white ring-1 ring-white/10 transition hover:bg-slate-800 active:scale-[0.99]"
         >
           Gioca contro Bot
@@ -131,6 +121,14 @@ export function HomePage({ onBot }: Props) {
           className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-4 text-center text-sm font-medium text-slate-200 transition hover:bg-slate-900 active:scale-[0.99]"
         >
           Come si gioca
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setRulesOpen(true)}
+          className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-4 text-center text-sm font-medium text-slate-200 transition hover:bg-slate-900 active:scale-[0.99]"
+        >
+          Regole
         </button>
       </div>
 
@@ -184,6 +182,8 @@ export function HomePage({ onBot }: Props) {
           </div>
         </div>
       )}
+
+      <RulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
     </div>
   );
 }

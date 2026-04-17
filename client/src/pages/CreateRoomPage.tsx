@@ -1,6 +1,11 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createMatchRoom, type MatchRoomOptions } from "../lib/colyseus";
+import {
+  createMatchRoom,
+  PREDICT_ROOM_ID_KEY,
+  type GameModeOption,
+  type MatchRoomOptions,
+} from "../lib/colyseus";
 
 const RES_KEY_PREFIX = "predichess:reservation:";
 
@@ -10,6 +15,7 @@ export function CreateRoomPage() {
   const [creating, setCreating] = useState(false);
 
   const [hostColorPref, setHostColorPref] = useState<MatchRoomOptions["hostColorPref"]>("random");
+  const [gameMode, setGameMode] = useState<GameModeOption>("classic");
   const [turnTimeSec, setTurnTimeSec] = useState<number>(20);
   const [predictiveSlots, setPredictiveSlots] = useState<number>(3);
   const [isPublic, setIsPublic] = useState<boolean>(true);
@@ -31,14 +37,16 @@ export function CreateRoomPage() {
         turnTimeSec: normalized.t,
         predictiveSlots: normalized.s,
         isPublic,
+        mode: gameMode,
       });
       // Store host seat reservation so the first tab consumes it (avoids phantom reserved seat → "locked").
       try {
         sessionStorage.setItem(`${RES_KEY_PREFIX}${code}`, JSON.stringify(reservation));
+        sessionStorage.setItem(PREDICT_ROOM_ID_KEY, code);
       } catch {
         // ignore storage errors; fallback to normal join
       }
-      navigate(`/play/${code}`, { replace: true });
+      navigate(`/room/${code}`, { replace: true });
     } catch {
       setError("Impossibile creare la stanza. Riprova.");
     } finally {
@@ -59,6 +67,32 @@ export function CreateRoomPage() {
       {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
 
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
+        <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
+          <label className="text-sm text-slate-300">Modalità di gioco</label>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {(
+              [
+                { id: "classic" as const, label: "Classico", hint: "Posizione iniziale" },
+                { id: "shuffle" as const, label: "Shuffle", hint: "Mediogioco casuale" },
+              ] as const
+            ).map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => setGameMode(o.id)}
+                className={`rounded-xl border px-3 py-3 text-left transition active:scale-[0.99] ${
+                  gameMode === o.id
+                    ? "border-indigo-500 bg-indigo-950/50 text-slate-50"
+                    : "border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                <div className="text-sm font-medium">{o.label}</div>
+                <div className="mt-1 text-[11px] text-slate-500">{o.hint}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
           <label className="text-sm text-slate-300">Colore</label>
           <div className="mt-3 grid grid-cols-3 gap-2">

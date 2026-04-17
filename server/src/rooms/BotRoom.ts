@@ -1,33 +1,52 @@
 import { Room, Client } from "@colyseus/core";
-import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
+import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
 import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
+import type { IBotEngine } from "../bot/IBotEngine.js";
+import { HeuristicEngine } from "../bot/HeuristicEngine.js";
 
 const TICK_MS = 100;
 const MAX_ROUNDS = 40;
 const IDLE_DISPOSE_MS = 3 * 60_000;
+const BOT_SESSION_ID = "BOT";
 
-export class GameRoom extends Room<PredictChessState> {
-  maxClients = 2;
+function withFenTurn(fen: string, turn: "w" | "b"): string {
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length < 2) return fen;
+  parts[1] = turn;
+  return parts.join(" ");
+}
+
+export class BotRoom extends Room<PredictChessState> {
+  maxClients = 1;
   private roomCode: string = "";
   private planMs = 20_000;
   private predictiveSlots = 3;
-  private isPublic = true;
-  private hostColorPref: "white" | "black" | "random" = "random";
+  private playerColorPref: "white" | "black" | "random" = "random";
   private gameMode: GameMode = "classic";
-  private hostIsWhite = true;
+  private playerIsWhite = true;
+  private botElo = 1000;
   private planningEndsAt = 0;
-  private planningPaused = false;
-  private planningPausedRemainingMs = 0;
   private timerInterval?: ReturnType<typeof setInterval>;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
   private pendingReconnections = new Set<string>();
+
+  private botEngine: IBotEngine;
+
+  constructor() {
+    super();
+    this.botEngine = new HeuristicEngine();
+  }
+
+  private botColor(): "white" | "black" {
+    return this.playerIsWhite ? "black" : "white";
+  }
 
   private buildStatus() {
     return {
@@ -46,6 +65,7 @@ export class GameRoom extends Room<PredictChessState> {
         connected: p.connected,
       })),
       lastResolutionSteps: this.state.lastResolutionSteps.toArray().map((s) => s.fenAfter),
+      predictiveSlots: this.state.predictiveSlots,
     };
   }
 
@@ -56,32 +76,32 @@ export class GameRoom extends Room<PredictChessState> {
   onCreate(
     options: {
       roomCode?: string;
-      hostColorPref?: "white" | "black" | "random";
+      color?: "white" | "black" | "random";
+      predictiveMoves?: number;
       turnTimeSec?: number;
-      predictiveSlots?: number;
-      isPublic?: boolean;
+      botElo?: number;
       mode?: "classic" | "shuffle";
     } = {}
   ) {
     this.roomCode = options?.roomCode ?? this.roomId;
     this.gameMode = normalizeGameMode(options.mode);
-    this.hostColorPref =
-      options.hostColorPref === "white" || options.hostColorPref === "black" || options.hostColorPref === "random"
-        ? options.hostColorPref
+    this.playerColorPref =
+      options.color === "white" || options.color === "black" || options.color === "random"
+        ? options.color
         : "random";
     const turnTimeSec = Math.max(10, Math.min(60, Math.floor(Number(options.turnTimeSec ?? 20) || 0)));
     this.planMs = turnTimeSec * 1000;
-    this.predictiveSlots = Math.max(1, Math.min(5, Math.floor(Number(options.predictiveSlots ?? 3) || 0)));
-    this.isPublic = options.isPublic !== false;
+    this.predictiveSlots = Math.max(1, Math.min(5, Math.floor(Number(options.predictiveMoves ?? 3) || 0)));
+    this.botElo = Math.max(100, Math.min(3000, Math.floor(Number(options.botElo ?? 1000) || 0)));
 
-    this.hostIsWhite =
-      this.hostColorPref === "white"
+    this.playerIsWhite =
+      this.playerColorPref === "white"
         ? true
-        : this.hostColorPref === "black"
+        : this.playerColorPref === "black"
           ? false
           : Math.random() < 0.5;
 
-    console.log(`[GameRoom] create roomId=${this.roomId} code=${this.roomCode}`);
+    console.log(`[BotRoom] create roomId=${this.roomId} code=${this.roomCode} elo=${this.botElo}`);
     registerRoomCode(this.roomCode, this.roomId);
     this.setState(new PredictChessState());
     this.state.phase = "lobby";
@@ -97,19 +117,18 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.historyLog.clear();
     this.state.turnTimeMs = this.planMs;
     this.state.predictiveSlots = this.predictiveSlots;
-    this.state.isPublic = this.isPublic;
-    this.state.hostColorPref = this.hostColorPref;
+    this.state.isPublic = false;
+    this.state.hostColorPref = "random";
     this.state.gameMode = this.gameMode;
 
     onRoomCreated();
-    // Only public rooms should be listed by getAvailableRooms().
-    this.setPrivate(!this.isPublic);
+    this.setPrivate(true);
     this.setMetadata({
-      isPublic: this.isPublic,
-      started: false,
-      turnTimeSec,
+      isBot: true,
+      started: true,
       predictiveSlots: this.predictiveSlots,
       code: this.roomCode,
+      botElo: this.botElo,
       gameMode: this.gameMode,
     });
 
@@ -131,55 +150,48 @@ export class GameRoom extends Room<PredictChessState> {
   }
 
   onJoin(client: Client) {
-    console.log(
-      `[GameRoom] join roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
-    );
-    const existing = this.state.players.get(client.sessionId);
-    if (existing) {
-      existing.connected = true;
-    } else {
-      const player = new Player();
-      player.sessionId = client.sessionId;
-      player.connected = true;
+    console.log(`[BotRoom] join roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
 
-      const count = this.clients.length;
-      if (count === 1) {
-        player.color = this.hostIsWhite ? "white" : "black";
-      } else if (count === 2) {
-        player.color = this.hostIsWhite ? "black" : "white";
-      } else {
-        player.color = "spectator";
-      }
-      this.state.players.set(client.sessionId, player);
+    const existingHuman = this.state.players.get(client.sessionId);
+    if (existingHuman && existingHuman.sessionId !== BOT_SESSION_ID) {
+      existingHuman.connected = true;
+      this.pendingReconnections.delete(client.sessionId);
+      if (this.pendingReconnections.size === 0) this.autoDispose = true;
+      onUserConnected();
+      this.broadcastStatus();
+      return;
     }
+
+    // Human player (first connection)
+    const p = new Player();
+    p.sessionId = client.sessionId;
+    p.connected = true;
+    p.color = this.playerIsWhite ? "white" : "black";
+    this.state.players.set(client.sessionId, p);
+
+    // Bot "player" (server-side)
+    const bot = new Player();
+    bot.sessionId = BOT_SESSION_ID;
+    bot.connected = true;
+    bot.color = this.botColor();
+    this.state.players.set(BOT_SESSION_ID, bot);
 
     onUserConnected();
-
-    // If the client rejoined via allowReconnection, it's no longer pending.
-    this.pendingReconnections.delete(client.sessionId);
-    if (this.pendingReconnections.size === 0) this.autoDispose = true;
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = undefined;
-    }
-    this.broadcastStatus();
-
-    if (this.clients.length === 2) {
-      console.log(`[GameRoom] beginMatch roomId=${this.roomId} code=${this.roomCode}`);
-      this.beginMatch();
-    }
+    this.beginMatch();
   }
 
   async onLeave(client: Client, consented: boolean) {
-    console.log(
-      `[GameRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
-    );
-    const p = this.state.players.get(client.sessionId);
-    if (p) p.connected = false;
+    console.log(`[BotRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
+    if (client.sessionId === BOT_SESSION_ID) {
+      return;
+    }
+
+    const human = this.state.players.get(client.sessionId);
+    if (human) human.connected = false;
     onUserDisconnected();
     this.broadcastStatus();
 
-    // Temporary disconnect (e.g. page refresh): keep seat for reconnection window.
+    // Involuntary disconnect (e.g. F5): keep room alive for Colyseus reconnection window.
     if (!consented) {
       this.pendingReconnections.add(client.sessionId);
       this.autoDispose = false;
@@ -192,20 +204,16 @@ export class GameRoom extends Room<PredictChessState> {
         this.broadcastStatus();
         return;
       } catch {
-        // reconnection window expired
         this.pendingReconnections.delete(client.sessionId);
         if (this.pendingReconnections.size === 0) this.autoDispose = true;
       }
     }
 
-    // Permanent leave (consented or reconnection timeout)
-    const leftColor = p?.color as "white" | "black" | undefined;
-    this.state.players.delete(client.sessionId);
-    this.broadcastStatus();
+    if (this.timerInterval) clearInterval(this.timerInterval);
+    this.timerInterval = undefined;
 
     if (this.state.phase !== "finished" && this.state.phase !== "lobby") {
-      if (leftColor === "white") this.endGame("black", "disconnect");
-      else if (leftColor === "black") this.endGame("white", "disconnect");
+      this.endGame(this.playerIsWhite ? "black" : "white", "disconnect");
     }
 
     if (this.clients.length === 0 && !this.ending && this.pendingReconnections.size === 0) {
@@ -231,15 +239,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
-    // Hide rooms once started; the Join list should only show pre-game lobbies.
-    this.setPrivate(true);
-    this.setMetadata({
-      ...(this.metadata ?? {}),
-      started: true,
-    });
-    console.log(
-      `[GameRoom] state->planning roomId=${this.roomId} code=${this.roomCode} (clients=${this.clients.length})`
-    );
+    this.state.phase = "planning";
     this.startPlanningPhase();
   }
 
@@ -250,13 +250,12 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.whiteMoves.clear();
     this.state.blackMoves.clear();
     this.state.lastResolutionSteps.clear();
+
+    // Pre-fill bot plan for this round (server-side) and lock it immediately.
+    this.fillAndLockBotPlan();
+
     this.planningEndsAt = Date.now() + this.planMs;
-    this.planningPaused = false;
-    this.planningPausedRemainingMs = 0;
     this.state.timerMs = this.planMs;
-    console.log(
-      `[GameRoom] planning started roomId=${this.roomId} code=${this.roomCode} endsAt=${this.planningEndsAt}`
-    );
 
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = setInterval(() => this.tickPlanning(), TICK_MS);
@@ -264,26 +263,6 @@ export class GameRoom extends Room<PredictChessState> {
   }
 
   private tickPlanning() {
-    const shouldPause =
-      [...this.state.players.values()].some(
-        (pl) => (pl.color === "white" || pl.color === "black") && pl.connected === false
-      );
-
-    if (shouldPause) {
-      if (!this.planningPaused) {
-        this.planningPausedRemainingMs = Math.max(0, this.planningEndsAt - Date.now());
-        this.planningPaused = true;
-      }
-      this.state.timerMs = this.planningPausedRemainingMs;
-      this.broadcastStatus();
-      return;
-    }
-
-    if (this.planningPaused) {
-      this.planningEndsAt = Date.now() + this.planningPausedRemainingMs;
-      this.planningPaused = false;
-    }
-
     const left = Math.max(0, this.planningEndsAt - Date.now());
     this.state.timerMs = left;
     this.broadcastStatus();
@@ -297,9 +276,8 @@ export class GameRoom extends Room<PredictChessState> {
 
   private handleSubmitPlan(client: Client, moves: PlannedMoveInput[]) {
     if (this.state.phase !== "planning") return;
-
     const player = this.state.players.get(client.sessionId);
-    if (!player || player.color === "spectator") return;
+    if (!player || player.sessionId === BOT_SESSION_ID) return;
 
     const color = player.color as "white" | "black";
     if (color === "white" && this.state.whiteLocked) return;
@@ -327,13 +305,14 @@ export class GameRoom extends Room<PredictChessState> {
       this.timerInterval = undefined;
       this.finalizePlanningAndResolve();
     }
+
     this.broadcastStatus();
   }
 
   private handleDraftPlan(client: Client, moves: PlannedMoveInput[]) {
     if (this.state.phase !== "planning") return;
     const player = this.state.players.get(client.sessionId);
-    if (!player || player.color === "spectator") return;
+    if (!player || player.sessionId === BOT_SESSION_ID) return;
 
     const color = player.color as "white" | "black";
     if (color === "white" && this.state.whiteLocked) return;
@@ -361,8 +340,19 @@ export class GameRoom extends Room<PredictChessState> {
     return false;
   }
 
+  private plannedToInput(arr: typeof this.state.whiteMoves): PlannedMoveInput[] {
+    const out: PlannedMoveInput[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      const m = arr.at(i);
+      out.push({ from: m?.from ?? "", to: m?.to ?? "" });
+    }
+    return padMovesN(out, this.predictiveSlots);
+  }
+
   private finalizePlanningAndResolve() {
-    if (!this.state.whiteLocked) {
+    // Auto-lock human side with whatever draft exists (or empty plan), same as multiplayer.
+    const humanColor = this.playerIsWhite ? "white" : "black";
+    if (humanColor === "white" && !this.state.whiteLocked) {
       const keep = this.hasAnyPlannedMove(this.state.whiteMoves);
       const src = keep ? this.plannedToInput(this.state.whiteMoves) : padMovesN([], this.predictiveSlots);
       this.state.whiteMoves.clear();
@@ -374,7 +364,7 @@ export class GameRoom extends Room<PredictChessState> {
       }
       this.state.whiteLocked = true;
     }
-    if (!this.state.blackLocked) {
+    if (humanColor === "black" && !this.state.blackLocked) {
       const keep = this.hasAnyPlannedMove(this.state.blackMoves);
       const src = keep ? this.plannedToInput(this.state.blackMoves) : padMovesN([], this.predictiveSlots);
       this.state.blackMoves.clear();
@@ -387,16 +377,30 @@ export class GameRoom extends Room<PredictChessState> {
       this.state.blackLocked = true;
     }
 
+    // Bot is already locked from startPlanningPhase.
     this.runResolution();
   }
 
-  private plannedToInput(arr: typeof this.state.whiteMoves): PlannedMoveInput[] {
-    const out: PlannedMoveInput[] = [];
-    for (let i = 0; i < arr.length; i++) {
-      const m = arr.at(i);
-      out.push({ from: m?.from ?? "", to: m?.to ?? "" });
+  private fillAndLockBotPlan() {
+    const botColor = this.botColor();
+    const isBotWhite = botColor === "white";
+
+    // Ensure the engine predicts for the bot side, regardless of the FEN active color.
+    const fenForBot = withFenTurn(this.state.fen, isBotWhite ? "w" : "b");
+    const seq = this.botEngine.predictSequence(fenForBot, this.predictiveSlots, this.botElo);
+    const arr = isBotWhite ? this.state.whiteMoves : this.state.blackMoves;
+    arr.clear();
+    for (let i = 0; i < this.predictiveSlots; i++) {
+      const uci = seq[i] ?? "";
+      const parsed = HeuristicEngine.parseUci(uci);
+      const pm = new PlannedMove();
+      pm.from = parsed?.from ?? "";
+      pm.to = parsed?.to ?? "";
+      arr.push(pm);
     }
-    return padMovesN(out, this.predictiveSlots);
+
+    if (isBotWhite) this.state.whiteLocked = true;
+    else this.state.blackLocked = true;
   }
 
   private runResolution() {
@@ -435,8 +439,6 @@ export class GameRoom extends Room<PredictChessState> {
       for (const c of step.captures ?? []) snap.captures.push(c);
       this.state.lastResolutionSteps.push(snap);
 
-      // Colyseus Schema children must not be referenced from two parents.
-      // `lastResolutionSteps` drives the current animation; `round.steps` is persisted history.
       const hist = new StepSnapshot();
       hist.fenAfter = snap.fenAfter;
       hist.fenAfterWhite = snap.fenAfterWhite;
@@ -468,8 +470,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.roundIndex++;
 
     if (this.state.roundIndex >= MAX_ROUNDS) {
-      const winner = this.materialWinner(fen);
-      this.endGame(winner, "max_rounds");
+      this.endGame("draw", "max_rounds");
       return;
     }
 
@@ -486,24 +487,6 @@ export class GameRoom extends Room<PredictChessState> {
     }
 
     this.startPlanningPhase();
-  }
-
-  private materialWinner(fen: string): "white" | "black" | "draw" {
-    const c = new Chess();
-    c.load(fen);
-    const values: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-    let w = 0;
-    let b = 0;
-    for (const row of c.board()) {
-      for (const p of row) {
-        if (!p) continue;
-        const v = values[p.type] ?? 0;
-        if (p.color === "w") w += v;
-        else b += v;
-      }
-    }
-    if (w === b) return "draw";
-    return w > b ? "white" : "black";
   }
 
   private handleResign(client: Client) {
@@ -534,3 +517,4 @@ export class GameRoom extends Room<PredictChessState> {
     }
   }
 }
+

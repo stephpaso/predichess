@@ -13,6 +13,7 @@ export class PlannedMove extends Schema {
 
 export class StepSnapshot extends Schema {
   @type("string") fenAfter: string = "";
+  @type("string") fenAfterWhite: string = "";
   @type("string") whiteMove: string = "";
   @type("string") blackMove: string = "";
   @type("boolean") whiteApplied: boolean = false;
@@ -41,10 +42,12 @@ export class PredictChessState extends Schema {
   @type("number") predictiveSlots: number = 3; // 1-5
   @type("boolean") isPublic: boolean = true;
   @type("string") hostColorPref: string = "random"; // white | black | random
+  @type("string") gameMode: string = "classic";
 
   @type({ map: Player }) players = new MapSchema<Player>();
 
   @type("string") winner: string = "";
+  @type("string") gameOverReason: string = "";
 
   @filter(function (this: PredictChessState, client: { sessionId: string }) {
     const me = this.players.get(client.sessionId);
@@ -66,4 +69,6 @@ export class PredictChessState extends Schema {
   @type([StepSnapshot]) lastResolutionSteps = new ArraySchema<StepSnapshot>();
 
   @type([RoundSnapshot]) resolvedRounds = new ArraySchema<RoundSnapshot>();
+
+  @type(["string"]) historyLog = new ArraySchema<string>();
 }

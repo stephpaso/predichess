@@ -4,13 +4,30 @@ import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
 import type { Room } from "colyseus.js";
 import {
-  consumePredictReservation,
+  consumePredictReservationForCode,
   formatJoinError,
   joinPredictRoom,
+  normalizeRoomCode,
+  PREDICT_ROOM_ID_KEY,
+  PREDICT_SESSION_ID_KEY,
+  persistPredictSession,
+  reconnectPredictRoom,
   releasePredictRoom,
 } from "../lib/colyseus";
-import type { PredictChessState } from "../schema/PredictChessState";
-import { isInCheckForSide, isMoveLegalForSide } from "../game/validation";
+import type { RoundResolvedPayload } from "../lib/roundResolved";
+import type {
+  PredictChessState,
+  RoundSnapshot,
+  StepSnapshot,
+} from "../schema/PredictChessState";
+import {
+  forkForSide,
+  findVerboseMoveTo,
+  getLegalTargetsForPlanning,
+  isInCheckForSide,
+  isMoveLegalForSide,
+  withFenTurn,
+} from "../game/validation";
 
 type Planned = { from: Square; to: Square };
 
@@ -32,11 +49,81 @@ function planFromState(
   return out;
 }
 
-function withFenTurn(fen: string, color: Color): string {
-  const parts = fen.trim().split(/\s+/);
-  if (parts.length < 2) return fen;
-  parts[1] = color;
-  return parts.join(" ");
+/** Fase di anteprima: FEN reale + evidenziazione pezzi che muoveranno (prima di bianco/nero). */
+const INCOMING_HIGHLIGHT_MS = 680;
+/** Pausa tra bianco e nero e tra uno slot e il successivo. */
+const HALF_MOVE_GAP_MS = 680;
+/** Evidenziazione rossa per mossa illegale. */
+const ILLEGAL_FLASH_MS = 780;
+/** Durata slide dei pezzi tra due FEN. */
+const BOARD_ANIM_MS = 400;
+
+/**
+ * Colyseus ArraySchema: prefer index iteration — `toArray()` can lag behind in-place
+ * mutations, so nested history (resolvedRounds / steps) looked empty in the UI.
+ */
+function readArraySchema<T>(arr: unknown): T[] {
+  if (arr == null) return [];
+  const a = arr as {
+    toArray?: () => T[];
+    length?: number;
+    at?: (i: number) => T;
+    get?: (i: number) => T;
+    items?: T[];
+  };
+  if (Array.isArray(a.items) && a.items.length > 0) return a.items as T[];
+  const len = typeof a.length === "number" ? a.length : 0;
+  if (len > 0) {
+    const out: T[] = [];
+    for (let i = 0; i < len; i++) {
+      const el = a.at?.(i) ?? a.get?.(i);
+      if (el !== undefined) out.push(el as T);
+    }
+    if (out.length > 0) return out;
+  }
+  if (typeof a.toArray === "function") {
+    try {
+      const t = a.toArray();
+      if (Array.isArray(t)) return t;
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
+const LAST_ANIM_ROUND_PREFIX = "predichess:lastAnimRound:";
+const lastAnimRoundMemory = new Map<string, number>();
+
+function lastAnimRoundStorageKey(roomCode: string): string {
+  return `${LAST_ANIM_ROUND_PREFIX}${roomCode || "_"}`;
+}
+
+/** Ultimo `roundIndex` per cui abbiamo già mostrato il playback (-1 = nessuno). */
+function readLastAnimatedRoundIndex(roomCode: string): number {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const raw = sessionStorage.getItem(lastAnimRoundStorageKey(roomCode));
+      if (raw != null) {
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return lastAnimRoundMemory.has(roomCode) ? lastAnimRoundMemory.get(roomCode)! : -1;
+}
+
+function writeLastAnimatedRoundIndex(roomCode: string, n: number): void {
+  lastAnimRoundMemory.set(roomCode, n);
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.setItem(lastAnimRoundStorageKey(roomCode), String(n));
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function GamePage() {
@@ -48,6 +135,7 @@ export function GamePage() {
   const [timerMs, setTimerMs] = useState(0);
   const [myColor, setMyColor] = useState<Color | null>(null);
   const [winner, setWinner] = useState("");
+  const [gameOverReason, setGameOverReason] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
   const [slotCount, setSlotCount] = useState(3);
@@ -55,14 +143,45 @@ export function GamePage() {
   const [locked, setLocked] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
-  const animTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [failedSquare, setFailedSquare] = useState<string | null>(null);
+  /** In risoluzione: case di partenza bianco/nero da evidenziare prima delle mosse dello slot. */
+  const [pendingMoveSquares, setPendingMoveSquares] = useState<{
+    white?: string;
+    black?: string;
+  } | null>(null);
+  const resolutionAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastValidFenRef = useRef<string>(new Chess().fen());
+  const roomRef = useRef<Room<PredictChessState> | null>(null);
+  const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
+  /** Bumps on every Colyseus state patch so React re-reads nested ArraySchemas (history). */
+  const [stateSyncVersion, setStateSyncVersion] = useState(0);
   const prevPhaseRef = useRef<string>("lobby");
   const prevRoundRef = useRef<number>(0);
   const draftTimer = useRef<number | null>(null);
+  /** Usato in applyState per allineare l’anchor playback senza dipendere da hook order. */
+  const roomCodeRef = useRef("");
+  const playbackInFlightRef = useRef(false);
+  const handleRoundResolvedRef = useRef<(msg: RoundResolvedPayload) => void>(() => {});
+
+  /** Chiave stabile per sessionStorage playback: codice stanza dall'URL (maiuscolo) o id sessione Colyseus. */
+  const playbackRoomKey = useMemo(() => {
+    const p = (roomId ?? "").trim();
+    if (p) {
+      const code = p.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      return code.length >= 1 ? code : "";
+    }
+    const sid = room?.id?.trim();
+    return sid ? `rid:${sid}` : "";
+  }, [roomId, room?.id]);
+
+  roomCodeRef.current = playbackRoomKey;
 
   const orientation = myColor === "b" ? "black" : "white";
+
+  roomRef.current = room;
 
   const applyState = useCallback((s: PredictChessState, sessionId: string) => {
     const nextPhase = s.phase ?? "lobby";
@@ -73,9 +192,13 @@ export function GamePage() {
     prevRoundRef.current = nextRound;
 
     setPhase(s.phase ?? "lobby");
-    if (s.fen) setServerFen(s.fen);
+    if (s.fen) {
+      setServerFen(s.fen);
+      lastValidFenRef.current = s.fen;
+    }
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
+    setGameOverReason(s.gameOverReason ?? "");
     setRoundIndex(nextRound);
     const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
     setSlotCount(slots);
@@ -100,13 +223,28 @@ export function GamePage() {
         setActiveSlot(0);
         setPickFrom(null);
         setHistoryCursor(null);
+        autoConfirmRoundRef.current = -1;
       }
       if (me?.color === "white") setLocked(s.whiteLocked);
       else if (me?.color === "black") setLocked(s.blackLocked);
     }
 
-    if (nextPhase === "planning" || nextPhase === "lobby") {
-      if (s.fen) setDisplayFen(s.fen);
+    // Non impostare displayFen qui in planning: il playback usa displayFen; altrimenti si salta al FEN finale.
+    if (nextPhase === "lobby" && s.fen) setDisplayFen(s.fen);
+
+    // Reconnect: history già nello stato → non riprodurre quei round quando arriva il messaggio.
+    const rc = roomCodeRef.current;
+    if (rc) {
+      const resolved = readArraySchema<RoundSnapshot>(s.resolvedRounds);
+      let maxIdx = -1;
+      for (const r of resolved) {
+        const ri = typeof r.roundIndex === "number" ? r.roundIndex : -1;
+        if (ri > maxIdx) maxIdx = ri;
+      }
+      if (maxIdx >= 0) {
+        const cur = readLastAnimatedRoundIndex(rc);
+        if (cur < maxIdx) writeLastAnimatedRoundIndex(rc, maxIdx);
+      }
     }
   }, []);
 
@@ -118,6 +256,7 @@ export function GamePage() {
         timerMs?: number;
         roundIndex?: number;
         winner?: string;
+        gameOverReason?: string;
         whiteLocked?: boolean;
         blackLocked?: boolean;
         players?: Array<{ sessionId: string; color: string; connected: boolean }>;
@@ -136,10 +275,12 @@ export function GamePage() {
       setPhase(nextPhase);
       if (msg.fen) {
         setServerFen(msg.fen);
-        if (nextPhase === "planning" || nextPhase === "lobby") setDisplayFen(msg.fen);
+        lastValidFenRef.current = msg.fen;
+        if (nextPhase === "lobby") setDisplayFen(msg.fen);
       }
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
+      setGameOverReason(msg.gameOverReason ?? "");
       setRoundIndex(nextRound);
       const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
       setSlotCount(slots);
@@ -159,6 +300,7 @@ export function GamePage() {
           setActiveSlot(0);
           setPickFrom(null);
           setHistoryCursor(null);
+          autoConfirmRoundRef.current = -1;
         }
       }
     },
@@ -171,24 +313,51 @@ export function GamePage() {
 
     (async () => {
       try {
-        const resKey = `predichess:reservation:${roomId}`;
+        const norm = normalizeRoomCode(roomId);
+        const resKey = `predichess:reservation:${norm}`;
         const reservationRaw = sessionStorage.getItem(resKey);
         if (reservationRaw) sessionStorage.removeItem(resKey);
 
-        const r = reservationRaw
-          ? await consumePredictReservation(JSON.parse(reservationRaw))
-          : await joinPredictRoom(roomId);
+        let r;
+        if (reservationRaw) {
+          r = await consumePredictReservationForCode(norm, JSON.parse(reservationRaw));
+        } else {
+          const storedRoom = sessionStorage.getItem(PREDICT_ROOM_ID_KEY);
+          const token = sessionStorage.getItem(PREDICT_SESSION_ID_KEY);
+          const canTryReconnect =
+            !!norm && !!token && storedRoom && normalizeRoomCode(storedRoom) === norm;
+
+          if (canTryReconnect) {
+            try {
+              r = await reconnectPredictRoom(norm, token);
+            } catch {
+              try {
+                sessionStorage.removeItem(PREDICT_SESSION_ID_KEY);
+              } catch {
+                /* ignore */
+              }
+              r = await joinPredictRoom(norm);
+            }
+          } else {
+            r = await joinPredictRoom(norm);
+          }
+        }
         if (cancelled) {
-          void releasePredictRoom(roomId, r);
+          void releasePredictRoom(norm, r);
           return;
         }
         joined = r;
+        persistPredictSession(norm, r);
         setRoom(r);
         applyState(r.state, r.sessionId);
         r.onStateChange((state) => {
           applyState(state, r.sessionId);
+          setStateSyncVersion((v) => v + 1);
         });
         r.onMessage("status", (m) => applyStatus(m, r.sessionId));
+        r.onMessage("round_resolved", (msg) =>
+          handleRoundResolvedRef.current(msg as RoundResolvedPayload)
+        );
         r.send("status_req");
       } catch (err) {
         console.error("joinPredictRoom", err);
@@ -198,38 +367,117 @@ export function GamePage() {
 
     return () => {
       cancelled = true;
-      if (joined) void releasePredictRoom(roomId, joined);
-      if (animTimer.current) clearInterval(animTimer.current);
+      if (joined) void releasePredictRoom(normalizeRoomCode(roomId), joined);
+      if (resolutionAnimTimer.current) clearTimeout(resolutionAnimTimer.current);
     };
   }, [roomId, applyState, applyStatus]);
 
+  /** In planning il server aggiorna subito `serverFen`; senza questo `displayFen` resta indietro dopo il playback. */
   useEffect(() => {
-    if (!room?.state || phase !== "resolution") return;
-    const steps = room.state.lastResolutionSteps?.toArray?.() ?? [];
-    if (animTimer.current) clearInterval(animTimer.current);
+    if (phase !== "planning" && phase !== "lobby") return;
+    if (isAnimating) return;
+    if (phase === "lobby" && room?.state?.fen) {
+      setDisplayFen(room.state.fen);
+      return;
+    }
+    if (phase === "planning" && serverFen) setDisplayFen(serverFen);
+  }, [phase, serverFen, isAnimating, room]);
 
-    const startId = window.setTimeout(() => {
-      if (steps.length === 0) {
-        setDisplayFen(room.state.fen);
+  const runRoundResolvedPlayback = useCallback(
+    (msg: RoundResolvedPayload) => {
+      const code = playbackRoomKey;
+      if (!code || !msg?.steps?.length) {
         return;
       }
-      let i = 0;
-      setDisplayFen(steps[0]?.fenAfter ?? room.state.fen);
-      animTimer.current = setInterval(() => {
-        i += 1;
-        if (i >= steps.length) {
-          if (animTimer.current) clearInterval(animTimer.current);
-          return;
-        }
-        setDisplayFen(steps[i].fenAfter);
-      }, 650);
-    }, 0);
+      const last = readLastAnimatedRoundIndex(code);
+      if (msg.roundIndex <= last) {
+        return;
+      }
+      if (playbackInFlightRef.current) {
+        return;
+      }
 
-    return () => {
-      window.clearTimeout(startId);
-      if (animTimer.current) clearInterval(animTimer.current);
-    };
-  }, [phase, room, roundIndex]);
+      const fenBeforeRound = (msg.fenBefore ?? "").trim() || lastValidFenRef.current;
+      const steps = msg.steps;
+
+      playbackInFlightRef.current = true;
+      setIsAnimating(true);
+      setFailedSquare(null);
+      setPendingMoveSquares(null);
+      setDisplayFen(fenBeforeRound);
+
+      const sleep = (ms: number) =>
+        new Promise<void>((resolve) => {
+          resolutionAnimTimer.current = setTimeout(resolve, ms);
+        });
+
+      void (async () => {
+        let fenBeforeStep = fenBeforeRound;
+        try {
+          for (const s of steps) {
+            const wm = (s.whiteMove ?? "").trim();
+            const bm = (s.blackMove ?? "").trim();
+            const wFrom = wm.length >= 4 ? wm.slice(0, 2) : "";
+            const bFrom = bm.length >= 4 ? bm.slice(0, 2) : "";
+            const fenAfterWhite = (s.fenAfterWhite ?? "").trim();
+            const fenAfter = (s.fenAfter ?? "").trim();
+            const fenBeforeBlack =
+              s.whiteApplied && fenAfterWhite ? fenAfterWhite : fenBeforeStep;
+
+            setDisplayFen(fenBeforeStep);
+            setFailedSquare(null);
+            if (wFrom || bFrom) {
+              setPendingMoveSquares({
+                ...(wFrom ? { white: wFrom } : {}),
+                ...(bFrom ? { black: bFrom } : {}),
+              });
+            } else {
+              setPendingMoveSquares(null);
+            }
+            await sleep(INCOMING_HIGHLIGHT_MS);
+            setPendingMoveSquares(null);
+
+            if (wm.length >= 4) {
+              if (s.whiteApplied) {
+                setDisplayFen(fenAfterWhite || fenBeforeStep);
+              } else {
+                setFailedSquare(wFrom);
+                await sleep(ILLEGAL_FLASH_MS);
+                setFailedSquare(null);
+              }
+            }
+            await sleep(HALF_MOVE_GAP_MS);
+
+            if (bm.length >= 4) {
+              if (s.blackApplied) {
+                setDisplayFen(fenAfter || fenBeforeBlack);
+              } else {
+                setFailedSquare(bFrom);
+                await sleep(ILLEGAL_FLASH_MS);
+                setFailedSquare(null);
+              }
+            }
+            await sleep(HALF_MOVE_GAP_MS);
+
+            fenBeforeStep = fenAfter || fenBeforeStep;
+          }
+
+          const r = roomRef.current;
+          setDisplayFen((r?.state?.fen ?? "").trim() || fenBeforeRound);
+          setFailedSquare(null);
+          setPendingMoveSquares(null);
+          setHistoryCursor(null);
+          writeLastAnimatedRoundIndex(code, msg.roundIndex);
+        } finally {
+          playbackInFlightRef.current = false;
+          setIsAnimating(false);
+        }
+      })();
+    },
+    [playbackRoomKey]
+  );
+
+  handleRoundResolvedRef.current = runRoundResolvedPlayback;
 
   // (planning reset is handled inside applyState/applyStatus on phase transition)
 
@@ -237,16 +485,19 @@ export function GamePage() {
     let fen = baseFen;
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
+      const found = findVerboseMoveTo(fen, m.from, m.to, color);
+      if (!found) break;
       const step = new Chess();
       step.load(withFenTurn(fen, color));
-      const verbose = step.moves({ square: m.from, verbose: true });
-      const found = verbose.find((mv) => mv.to === m.to);
-      if (!found) break;
-      const res = step.move({ from: m.from, to: m.to, promotion: found.promotion });
+      const res = step.move({ from: m.from, to: found.to, promotion: found.promotion });
       if (!res) break;
       fen = step.fen();
     }
     return fen;
+  }
+
+  function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
+    return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
   }
 
   const planningFen = useMemo(() => {
@@ -254,7 +505,9 @@ export function GamePage() {
     return computePlanningFen(serverFen, plan, myColor);
   }, [phase, myColor, serverFen, plan]);
 
-  const boardFen = phase === "planning" ? planningFen : displayFen;
+  /** Durante il playback post-turno `phase` è già "planning" ma dobbiamo mostrare `displayFen`, non `planningFen` (che segue subito il FEN server finale). */
+  const boardFen =
+    phase === "planning" && !isAnimating ? planningFen : displayFen;
 
   const inCheckAtStart = useMemo(() => {
     if (!myColor) return false;
@@ -267,7 +520,7 @@ export function GamePage() {
   }, [planningFen, myColor]);
 
   const canEditPlan =
-    phase === "planning" && myColor && !locked && timerMs > 0;
+    phase === "planning" && myColor && !locked && timerMs > 0 && !isAnimating;
 
   useEffect(() => {
     setActiveSlot((cur) => {
@@ -275,6 +528,10 @@ export function GamePage() {
       return Math.min(Math.max(0, cur), max);
     });
   }, [slotCount]);
+
+  useEffect(() => {
+    setPickFrom(null);
+  }, [activeSlot]);
 
   // Send draft plan to server (for auto-confirm on timeout).
   useEffect(() => {
@@ -293,20 +550,89 @@ export function GamePage() {
   }, [plan, room, canEditPlan, myColor]);
 
   const historyFens = useMemo(() => {
-    const rounds = room?.state?.resolvedRounds?.toArray?.() ?? [];
+    const rounds = readArraySchema<RoundSnapshot>(room?.state?.resolvedRounds);
     const out: string[] = [];
     for (const r of rounds) {
-      const steps = r.steps?.toArray?.() ?? [];
+      const steps = readArraySchema<StepSnapshot>(r.steps);
       for (const s of steps) {
         if (s?.fenAfter) out.push(s.fenAfter);
       }
     }
     return out;
-  }, [room, roundIndex, phase, room?.state?.resolvedRounds?.length]);
+  }, [room, stateSyncVersion]);
+
+  const resolvedRoundsList = useMemo(
+    () => readArraySchema<RoundSnapshot>(room?.state?.resolvedRounds),
+    [room, stateSyncVersion]
+  );
+
+  const historyLogList = useMemo(
+    () => readArraySchema<string>(room?.state?.historyLog),
+    [room, stateSyncVersion]
+  );
 
   const viewingHistory =
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
-  const effectiveBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
+  const rawBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
+  const effectiveBoardFen =
+    rawBoardFen && rawBoardFen.trim() ? rawBoardFen : lastValidFenRef.current;
+
+  const baseFenActiveSlot = useMemo(() => {
+    if (!myColor) return serverFen;
+    return fenBeforeSlot(serverFen, plan, myColor, activeSlot);
+  }, [serverFen, plan, myColor, activeSlot]);
+
+  const legalTargetsForPick = useMemo(() => {
+    if (!pickFrom || !myColor || phase !== "planning") return new Set<string>();
+    return new Set(getLegalTargetsForPlanning(baseFenActiveSlot, pickFrom, myColor));
+  }, [pickFrom, myColor, phase, baseFenActiveSlot]);
+
+  const customSquareStyles = useMemo(() => {
+    const st: Record<string, import("react").CSSProperties> = {};
+    if (failedSquare) {
+      st[failedSquare] = {
+        backgroundColor: "rgba(255, 0, 0, 0.6)",
+        boxShadow: "inset 0 0 0 2px rgba(255, 80, 80, 0.9)",
+      };
+    }
+    if ((phase === "resolution" || isAnimating) && pendingMoveSquares) {
+      if (pendingMoveSquares.white) {
+        st[pendingMoveSquares.white] = {
+          backgroundColor: "rgba(100, 190, 255, 0.55)",
+          boxShadow: "inset 0 0 0 2px rgba(120, 200, 255, 0.95)",
+        };
+      }
+      if (pendingMoveSquares.black) {
+        st[pendingMoveSquares.black] = {
+          backgroundColor: "rgba(255, 210, 90, 0.5)",
+          boxShadow: "inset 0 0 0 2px rgba(255, 200, 60, 0.9)",
+        };
+      }
+    }
+    if (!pickFrom || phase !== "planning" || !canEditPlan || viewingHistory) return st;
+    st[pickFrom] = { backgroundColor: "rgba(255, 220, 80, 0.35)" };
+    const dot =
+      "radial-gradient(circle, rgba(0,0,0,0.55) 22%, transparent 24%), radial-gradient(circle, rgba(255,255,255,0.2) 22%, transparent 24%)";
+    for (const sq of legalTargetsForPick) {
+      if (sq === pickFrom) continue;
+      st[sq] = {
+        background: dot,
+        backgroundColor: "rgba(120, 180, 255, 0.12)",
+        backgroundPosition: "center",
+        backgroundSize: "100% 100%",
+      };
+    }
+    return st;
+  }, [
+    pickFrom,
+    phase,
+    canEditPlan,
+    viewingHistory,
+    legalTargetsForPick,
+    failedSquare,
+    pendingMoveSquares,
+    isAnimating,
+  ]);
 
   const goHistoryBack = useCallback(() => {
     if (historyFens.length === 0) return;
@@ -331,7 +657,7 @@ export function GamePage() {
       if (!el) return false;
       const tag = (el.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return true;
-      if ((el as any).isContentEditable) return true;
+      if (el.isContentEditable) return true;
       return false;
     }
 
@@ -349,10 +675,6 @@ export function GamePage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [goHistoryBack, goHistoryForward]);
-
-  function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
-    return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
-  }
 
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => {
@@ -416,6 +738,34 @@ export function GamePage() {
     setLocked(true);
   }
 
+  useEffect(() => {
+    if (!room || !canEditPlan || !myColor || viewingHistory || locked) return;
+    if (phase !== "planning") return;
+    const full = plan.every((p) => !!(p.from && p.to));
+    if (!full) return;
+    if (autoConfirmRoundRef.current === roundIndex) return;
+    if (inCheckAtStart) {
+      const hasAnyMove = plan.some((p) => !!(p.from && p.to));
+      if (!hasAnyMove) return;
+    }
+    autoConfirmRoundRef.current = roundIndex;
+    const moves = plan.map((p) =>
+      p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
+    );
+    room.send("submit_plan", { moves });
+    setLocked(true);
+  }, [
+    plan,
+    room,
+    canEditPlan,
+    myColor,
+    viewingHistory,
+    locked,
+    phase,
+    roundIndex,
+    inCheckAtStart,
+  ]);
+
   const slotsUi = useMemo(() => plan, [plan]);
 
   const lobbyWait =
@@ -477,13 +827,12 @@ export function GamePage() {
               type="button"
               className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-indigo-900/40 ring-1 ring-white/10 transition hover:bg-indigo-500 active:scale-[0.99]"
               onClick={async () => {
-                const url = `${window.location.origin}/?room=${encodeURIComponent(roomId)}&guest=1`;
+                const url = window.location.href;
                 try {
                   await navigator.clipboard.writeText(url);
                   setToast("Link copiato");
                 } catch {
                   try {
-                    // Fallback: select+copy via prompt
                     window.prompt("Copia il link:", url);
                   } finally {
                     setToast("Link pronto");
@@ -491,7 +840,7 @@ export function GamePage() {
                 }
               }}
             >
-              Copia Link di Invito
+              Copia Link Stanza
             </button>
           </div>
         </div>
@@ -551,20 +900,26 @@ export function GamePage() {
       {phase === "resolution" && (
         <p className="mb-3 text-center text-sm text-slate-400">
           Risoluzione — round {roundIndex + 1}
+          {isAnimating ? " · animazione" : ""}
         </p>
       )}
 
       {phase === "finished" && winner && (
-        <p className="mb-4 text-center text-lg text-white">
-          Fine partita:{" "}
-          <span className="text-indigo-300">
-            {winner === "draw"
-              ? "Patta"
-              : winner === "white"
-                ? "Vince il Bianco"
-                : "Vince il Nero"}
-          </span>
-        </p>
+        <div className="mb-4 text-center">
+          <p className="text-lg text-white">
+            Fine partita:{" "}
+            <span className="text-indigo-300">
+              {winner === "draw"
+                ? "Patta"
+                : winner === "white"
+                  ? "Vince il Bianco"
+                  : "Vince il Nero"}
+            </span>
+          </p>
+          {gameOverReason ? (
+            <p className="mt-2 text-sm text-slate-400">{gameOverReason}</p>
+          ) : null}
+        </div>
       )}
 
       {phase !== "lobby" && phase !== "finished" && (
@@ -584,16 +939,34 @@ export function GamePage() {
             options={{
               position: effectiveBoardFen,
               boardOrientation: orientation,
-              allowDragging: !!canEditPlan && !viewingHistory,
+              animationDurationInMs: BOARD_ANIM_MS,
+              squareStyles: customSquareStyles,
+              allowDragging: !!canEditPlan && !viewingHistory && !isAnimating,
               onSquareClick: ({ square }) => {
                 const sq = square as Square;
                 if (!canEditPlan || !myColor || viewingHistory) return;
+                const base = fenBeforeSlot(serverFen, plan, myColor, activeSlot);
+                const c = forkForSide(base, myColor);
                 if (!pickFrom) {
+                  const piece = c.get(sq);
+                  if (piece && piece.color === myColor) setPickFrom(sq);
+                  return;
+                }
+                if (sq === pickFrom) {
+                  setPickFrom(null);
+                  return;
+                }
+                const onDest = c.get(sq);
+                if (onDest && onDest.color === myColor) {
                   setPickFrom(sq);
                   return;
                 }
-                const ok = onPieceDrop(pickFrom, sq);
-                if (ok) setPickFrom(null);
+                if (legalTargetsForPick.has(sq)) {
+                  const ok = onPieceDrop(pickFrom, sq);
+                  if (ok) setPickFrom(null);
+                  return;
+                }
+                setPickFrom(null);
               },
               onPieceDrop: ({ sourceSquare, targetSquare }) => {
                 if (!targetSquare) return false;
@@ -605,7 +978,8 @@ export function GamePage() {
 
         <div className="w-full lg:w-80">
           <RoundHistoryPanel
-            rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
+            rounds={resolvedRoundsList}
+            historyLines={historyLogList}
             cursor={historyCursor}
             totalFens={historyFens.length}
             onBack={goHistoryBack}
@@ -680,6 +1054,7 @@ export function GamePage() {
 
 function RoundHistoryPanel({
   rounds,
+  historyLines,
   cursor,
   totalFens,
   onBack,
@@ -696,6 +1071,7 @@ function RoundHistoryPanel({
         }
       | Array<{ fenAfter: string; whiteMove: string; blackMove: string }>;
   }>;
+  historyLines: string[];
   cursor: number | null;
   totalFens: number;
   onBack: () => void;
@@ -741,13 +1117,24 @@ function RoundHistoryPanel({
           <span className="text-[11px] text-slate-500">{rounds.length}</span>
         </div>
       </div>
+      {historyLines.length > 0 && (
+        <div className="mt-3 max-h-[28dvh] space-y-1.5 overflow-auto rounded-xl border border-white/5 bg-slate-900/50 p-2 lg:max-h-[min(36dvh,420px)]">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            Log partita
+          </div>
+          {historyLines.map((line, i) => (
+            <p key={i} className="text-[11px] leading-snug text-slate-400">
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
       <div className="mt-2 max-h-[40dvh] space-y-2 overflow-auto pr-1 lg:max-h-[min(62dvh,640px)]">
         {rounds.length === 0 && (
           <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>
         )}
         {rounds.map((r, ri) => {
-          const steps =
-            (Array.isArray(r.steps) ? r.steps : r.steps?.toArray?.()) ?? [];
+          const steps = readArraySchema<StepSnapshot>(r.steps);
           const movesText = steps
             .map((s, i) => {
               const w = s.whiteMove

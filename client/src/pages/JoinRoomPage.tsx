@@ -16,6 +16,7 @@ export function JoinRoomPage() {
       predictiveSlots?: number;
       started?: boolean;
       isPublic?: boolean;
+      gameMode?: string;
     }>
   >([]);
 
@@ -36,6 +37,7 @@ export function JoinRoomPage() {
             predictiveSlots: typeof md.predictiveSlots === "number" ? md.predictiveSlots : undefined,
             started: typeof md.started === "boolean" ? md.started : undefined,
             isPublic: typeof md.isPublic === "boolean" ? md.isPublic : undefined,
+            gameMode: typeof md.gameMode === "string" ? md.gameMode : undefined,
           };
         });
         setRooms(mapped);
@@ -63,7 +65,7 @@ export function JoinRoomPage() {
     e.preventDefault();
     const c = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (c.length < 4) return;
-    navigate(`/play/${c}`);
+    navigate(`/room/${c}`);
   }
 
   return (
@@ -100,12 +102,13 @@ export function JoinRoomPage() {
                 const code = (r.code ?? r.roomId).toUpperCase();
                 const tt = r.turnTimeSec ?? 20;
                 const slots = r.predictiveSlots ?? 3;
+                const modeLabel = r.gameMode === "shuffle" ? "Shuffle" : "Classico";
                 return (
                   <tr key={r.roomId} className="hover:bg-slate-900/40">
                     <td className="px-3 py-2">
                       <button
                         type="button"
-                        onClick={() => navigate(`/play/${code}`)}
+                        onClick={() => navigate(`/room/${code}`)}
                         className="font-mono text-slate-200 hover:text-white"
                       >
                         {code}
@@ -115,7 +118,7 @@ export function JoinRoomPage() {
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right text-[11px] text-slate-400">
-                      {tt}s · {slots} slot
+                      {modeLabel} · {tt}s · {slots} slot
                     </td>
                   </tr>
                 );
