@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
 import type { Room } from "colyseus.js";
@@ -7,7 +7,11 @@ import {
   consumePredictReservationForCode,
   formatJoinError,
   joinPredictRoom,
-  joinPredictRoomByResolvedId,
+  normalizeRoomCode,
+  PREDICT_ROOM_ID_KEY,
+  PREDICT_SESSION_ID_KEY,
+  persistPredictSession,
+  reconnectPredictRoom,
   releasePredictRoom,
 } from "../lib/colyseus";
 import type { RoundResolvedPayload } from "../lib/roundResolved";
@@ -124,7 +128,6 @@ function writeLastAnimatedRoundIndex(roomCode: string, n: number): void {
 
 export function GamePage() {
   const { roomId = "" } = useParams();
-  const [search] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<Room<PredictChessState> | null>(null);
   const [phase, setPhase] = useState<string>("lobby");
@@ -310,21 +313,41 @@ export function GamePage() {
 
     (async () => {
       try {
-        const rid = String(search.get("rid") ?? "").trim();
-        const resKey = `predichess:reservation:${roomId}`;
+        const norm = normalizeRoomCode(roomId);
+        const resKey = `predichess:reservation:${norm}`;
         const reservationRaw = sessionStorage.getItem(resKey);
         if (reservationRaw) sessionStorage.removeItem(resKey);
 
-        const r = reservationRaw
-          ? await consumePredictReservationForCode(roomId, JSON.parse(reservationRaw))
-          : rid
-            ? await joinPredictRoomByResolvedId(roomId, rid)
-            : await joinPredictRoom(roomId);
+        let r;
+        if (reservationRaw) {
+          r = await consumePredictReservationForCode(norm, JSON.parse(reservationRaw));
+        } else {
+          const storedRoom = sessionStorage.getItem(PREDICT_ROOM_ID_KEY);
+          const token = sessionStorage.getItem(PREDICT_SESSION_ID_KEY);
+          const canTryReconnect =
+            !!norm && !!token && storedRoom && normalizeRoomCode(storedRoom) === norm;
+
+          if (canTryReconnect) {
+            try {
+              r = await reconnectPredictRoom(norm, token);
+            } catch {
+              try {
+                sessionStorage.removeItem(PREDICT_SESSION_ID_KEY);
+              } catch {
+                /* ignore */
+              }
+              r = await joinPredictRoom(norm);
+            }
+          } else {
+            r = await joinPredictRoom(norm);
+          }
+        }
         if (cancelled) {
-          void releasePredictRoom(roomId, r);
+          void releasePredictRoom(norm, r);
           return;
         }
         joined = r;
+        persistPredictSession(norm, r);
         setRoom(r);
         applyState(r.state, r.sessionId);
         r.onStateChange((state) => {
@@ -344,10 +367,10 @@ export function GamePage() {
 
     return () => {
       cancelled = true;
-      if (joined) void releasePredictRoom(roomId, joined);
+      if (joined) void releasePredictRoom(normalizeRoomCode(roomId), joined);
       if (resolutionAnimTimer.current) clearTimeout(resolutionAnimTimer.current);
     };
-  }, [roomId, search, applyState, applyStatus]);
+  }, [roomId, applyState, applyStatus]);
 
   /** In planning il server aggiorna subito `serverFen`; senza questo `displayFen` resta indietro dopo il playback. */
   useEffect(() => {
@@ -804,13 +827,12 @@ export function GamePage() {
               type="button"
               className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-indigo-900/40 ring-1 ring-white/10 transition hover:bg-indigo-500 active:scale-[0.99]"
               onClick={async () => {
-                const url = `${window.location.origin}/?room=${encodeURIComponent(roomId)}&guest=1`;
+                const url = window.location.href;
                 try {
                   await navigator.clipboard.writeText(url);
                   setToast("Link copiato");
                 } catch {
                   try {
-                    // Fallback: select+copy via prompt
                     window.prompt("Copia il link:", url);
                   } finally {
                     setToast("Link pronto");
@@ -818,7 +840,7 @@ export function GamePage() {
                 }
               }}
             >
-              Copia Link di Invito
+              Copia Link Stanza
             </button>
           </div>
         </div>

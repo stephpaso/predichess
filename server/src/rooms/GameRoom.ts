@@ -4,7 +4,7 @@ import { Chess } from "chess.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
-import { releaseRoomCode } from "../registry.js";
+import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
 
@@ -82,6 +82,7 @@ export class GameRoom extends Room<PredictChessState> {
           : Math.random() < 0.5;
 
     console.log(`[GameRoom] create roomId=${this.roomId} code=${this.roomCode}`);
+    registerRoomCode(this.roomCode, this.roomId);
     this.setState(new PredictChessState());
     this.state.phase = "lobby";
     this.state.fen = new Chess().fen();
@@ -178,12 +179,12 @@ export class GameRoom extends Room<PredictChessState> {
     onUserDisconnected();
     this.broadcastStatus();
 
-    // Temporary disconnect: allow up to 3 minutes for reconnection.
+    // Temporary disconnect (e.g. page refresh): keep seat for reconnection window.
     if (!consented) {
       this.pendingReconnections.add(client.sessionId);
       this.autoDispose = false;
       try {
-        await this.allowReconnection(client, 180);
+        await this.allowReconnection(client, 30);
         const rejoined = this.state.players.get(client.sessionId);
         if (rejoined) rejoined.connected = true;
         this.pendingReconnections.delete(client.sessionId);

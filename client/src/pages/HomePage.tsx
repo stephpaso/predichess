@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { normalizeRoomCode } from "../lib/colyseus";
 import { RulesModal } from "../components/RulesModal";
 import { apiBase } from "../lib/colyseus";
 
@@ -12,11 +13,8 @@ export function HomePage({ onBot }: Props) {
   const [params] = useSearchParams();
   const roomParam = useMemo(() => {
     const raw = params.get("room") ?? "";
-    const c = raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const c = normalizeRoomCode(raw);
     return c.length >= 4 ? c : "";
-  }, [params]);
-  const guest = useMemo(() => {
-    return (params.get("guest") ?? "") === "1";
   }, [params]);
 
   const [howOpen, setHowOpen] = useState(false);
@@ -25,18 +23,8 @@ export function HomePage({ onBot }: Props) {
 
   useEffect(() => {
     if (!roomParam) return;
-    if (guest) {
-      try {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const k = localStorage.key(i) ?? "";
-          if (k.toLowerCase().includes("colyseus")) localStorage.removeItem(k);
-        }
-      } catch {
-        // ignore
-      }
-    }
-    navigate(`/play/${roomParam}`, { replace: true });
-  }, [roomParam, guest, navigate]);
+    navigate(`/room/${roomParam}`, { replace: true });
+  }, [roomParam, navigate]);
 
   useEffect(() => {
     let cancelled = false;

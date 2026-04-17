@@ -4,7 +4,7 @@ import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } f
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
-import { releaseRoomCode } from "../registry.js";
+import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
 import type { IBotEngine } from "../bot/IBotEngine.js";
@@ -35,6 +35,7 @@ export class BotRoom extends Room<PredictChessState> {
   private timerInterval?: ReturnType<typeof setInterval>;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
+  private pendingReconnections = new Set<string>();
 
   private botEngine: IBotEngine;
 
@@ -101,6 +102,7 @@ export class BotRoom extends Room<PredictChessState> {
           : Math.random() < 0.5;
 
     console.log(`[BotRoom] create roomId=${this.roomId} code=${this.roomCode} elo=${this.botElo}`);
+    registerRoomCode(this.roomCode, this.roomId);
     this.setState(new PredictChessState());
     this.state.phase = "lobby";
     this.state.fen = new Chess().fen();
@@ -150,7 +152,17 @@ export class BotRoom extends Room<PredictChessState> {
   onJoin(client: Client) {
     console.log(`[BotRoom] join roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
 
-    // Human player
+    const existingHuman = this.state.players.get(client.sessionId);
+    if (existingHuman && existingHuman.sessionId !== BOT_SESSION_ID) {
+      existingHuman.connected = true;
+      this.pendingReconnections.delete(client.sessionId);
+      if (this.pendingReconnections.size === 0) this.autoDispose = true;
+      onUserConnected();
+      this.broadcastStatus();
+      return;
+    }
+
+    // Human player (first connection)
     const p = new Player();
     p.sessionId = client.sessionId;
     p.connected = true;
@@ -170,18 +182,41 @@ export class BotRoom extends Room<PredictChessState> {
 
   async onLeave(client: Client, consented: boolean) {
     console.log(`[BotRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
+    if (client.sessionId === BOT_SESSION_ID) {
+      return;
+    }
+
+    const human = this.state.players.get(client.sessionId);
+    if (human) human.connected = false;
     onUserDisconnected();
     this.broadcastStatus();
+
+    // Involuntary disconnect (e.g. F5): keep room alive for Colyseus reconnection window.
+    if (!consented) {
+      this.pendingReconnections.add(client.sessionId);
+      this.autoDispose = false;
+      try {
+        await this.allowReconnection(client, 30);
+        const rejoined = this.state.players.get(client.sessionId);
+        if (rejoined) rejoined.connected = true;
+        this.pendingReconnections.delete(client.sessionId);
+        if (this.pendingReconnections.size === 0) this.autoDispose = true;
+        this.broadcastStatus();
+        return;
+      } catch {
+        this.pendingReconnections.delete(client.sessionId);
+        if (this.pendingReconnections.size === 0) this.autoDispose = true;
+      }
+    }
 
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
 
-    // If the human leaves mid-game, bot wins by disconnect.
-    if (!consented && this.state.phase !== "finished" && this.state.phase !== "lobby") {
+    if (this.state.phase !== "finished" && this.state.phase !== "lobby") {
       this.endGame(this.playerIsWhite ? "black" : "white", "disconnect");
     }
 
-    if (this.clients.length === 0 && !this.ending) {
+    if (this.clients.length === 0 && !this.ending && this.pendingReconnections.size === 0) {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => {
         void this.disconnect();

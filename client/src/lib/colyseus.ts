@@ -3,6 +3,30 @@ import type { Room } from "colyseus.js";
 import { MatchMakeError } from "colyseus.js";
 import { PredictChessState } from "../schema/PredictChessState";
 
+/** Short room code from URL; matches `predict_roomId` in sessionStorage. */
+export function normalizeRoomCode(roomId: string): string {
+  return roomId.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** sessionStorage: last joined room code (URL segment). */
+export const PREDICT_ROOM_ID_KEY = "predict_roomId";
+/** sessionStorage: Colyseus `room.reconnectionToken` for `client.reconnect()` after F5. */
+export const PREDICT_SESSION_ID_KEY = "predict_sessionId";
+
+export function persistPredictSession(roomCode: string, room: Room<PredictChessState>): void {
+  const code = normalizeRoomCode(roomCode);
+  if (!code) return;
+  try {
+    const token = room.reconnectionToken;
+    if (token) {
+      sessionStorage.setItem(PREDICT_ROOM_ID_KEY, code);
+      sessionStorage.setItem(PREDICT_SESSION_ID_KEY, token);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** HTTP API: same origin in dev (Vite proxy → server). */
 export const apiBase = import.meta.env.VITE_API_URL ?? "";
 
@@ -76,8 +100,9 @@ export async function consumePredictReservationForCode(
   roomCode: string,
   reservation: unknown
 ): Promise<Room<PredictChessState>> {
+  const key = normalizeRoomCode(roomCode);
   const room = await consumePredictReservation(reservation);
-  const existing = joins.get(roomCode);
+  const existing = joins.get(key);
   if (existing?.room) {
     // If something already joined, prefer it and leave this one.
     await room.leave();
@@ -89,10 +114,10 @@ export async function consumePredictReservationForCode(
     promise: Promise.resolve(room),
     room,
   };
-  joins.set(roomCode, entry);
+  joins.set(key, entry);
   room.onLeave(() => {
-    const cur = joins.get(roomCode);
-    if (cur?.room === room) joins.delete(roomCode);
+    const cur = joins.get(key);
+    if (cur?.room === room) joins.delete(key);
   });
   return room;
 }
@@ -111,7 +136,8 @@ type JoinEntry = {
 const joins = new Map<string, JoinEntry>();
 
 export async function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
-  const existing = joins.get(roomId);
+  const key = normalizeRoomCode(roomId);
+  const existing = joins.get(key);
   if (existing) {
     existing.refCount += 1;
     return existing.room ? Promise.resolve(existing.room) : existing.promise;
@@ -119,21 +145,22 @@ export async function joinPredictRoom(roomId: string): Promise<Room<PredictChess
 
   // roomId here is the short roomCode used in the URL.
   const resolvedRoomId = await (async () => {
-    const res = await fetch(`${apiBase}/match/resolve/${encodeURIComponent(roomId)}`);
+    const res = await fetch(`${apiBase}/match/resolve/${encodeURIComponent(key)}`);
     if (!res.ok) throw new MatchMakeError("room not found", res.status);
     const data = (await res.json()) as { roomId?: string };
     if (!data.roomId) throw new MatchMakeError("room not found", 404);
     return data.roomId;
   })();
 
-  return joinPredictRoomByResolvedId(roomId, resolvedRoomId);
+  return joinPredictRoomByResolvedId(key, resolvedRoomId);
 }
 
 export async function joinPredictRoomByResolvedId(
   roomCode: string,
   resolvedRoomId: string
 ): Promise<Room<PredictChessState>> {
-  const existing = joins.get(roomCode);
+  const key = normalizeRoomCode(roomCode);
+  const existing = joins.get(key);
   if (existing) {
     existing.refCount += 1;
     return existing.room ? Promise.resolve(existing.room) : existing.promise;
@@ -143,28 +170,63 @@ export async function joinPredictRoomByResolvedId(
     refCount: 1,
     promise: getColyseusClient().joinById<PredictChessState>(resolvedRoomId),
   };
-  joins.set(roomCode, entry);
+  joins.set(key, entry);
 
   entry.promise
     .then((room) => {
       entry.room = room;
       room.onLeave(() => {
-        const cur = joins.get(roomCode);
-        if (cur?.room === room) joins.delete(roomCode);
+        const cur = joins.get(key);
+        if (cur?.room === room) joins.delete(key);
       });
       return room;
     })
     .catch(() => {
       // On join failure, allow retries.
-      const cur = joins.get(roomCode);
-      if (cur === entry) joins.delete(roomCode);
+      const cur = joins.get(key);
+      if (cur === entry) joins.delete(key);
+    });
+
+  return entry.promise;
+}
+
+/**
+ * Reconnect after involuntary disconnect (e.g. F5) using the stored Colyseus reconnection token.
+ */
+export async function reconnectPredictRoom(roomCode: string, reconnectionToken: string): Promise<Room<PredictChessState>> {
+  const key = normalizeRoomCode(roomCode);
+  const existing = joins.get(key);
+  if (existing) {
+    existing.refCount += 1;
+    return existing.room ? Promise.resolve(existing.room) : existing.promise;
+  }
+
+  const entry: JoinEntry = {
+    refCount: 1,
+    promise: getColyseusClient().reconnect<PredictChessState>(reconnectionToken),
+  };
+  joins.set(key, entry);
+
+  entry.promise
+    .then((room) => {
+      entry.room = room;
+      room.onLeave(() => {
+        const cur = joins.get(key);
+        if (cur?.room === room) joins.delete(key);
+      });
+      return room;
+    })
+    .catch(() => {
+      const cur = joins.get(key);
+      if (cur === entry) joins.delete(key);
     });
 
   return entry.promise;
 }
 
 export async function releasePredictRoom(roomId: string, room: Room<PredictChessState>) {
-  const entry = joins.get(roomId);
+  const key = normalizeRoomCode(roomId);
+  const entry = joins.get(key);
   if (!entry) {
     await room.leave();
     return;
@@ -174,10 +236,10 @@ export async function releasePredictRoom(roomId: string, room: Room<PredictChess
     // React StrictMode can briefly drop refCount to 0 between the two mounts.
     // Delay the actual leave to allow the second mount to re-acquire.
     window.setTimeout(() => {
-      const cur = joins.get(roomId);
+      const cur = joins.get(key);
       if (!cur) return;
       if (cur.refCount !== 0) return;
-      joins.delete(roomId);
+      joins.delete(key);
       void room.leave();
     }, 0);
   }

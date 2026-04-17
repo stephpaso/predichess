@@ -1,6 +1,11 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createMatchRoom, type GameModeOption, type MatchRoomOptions } from "../lib/colyseus";
+import {
+  createMatchRoom,
+  PREDICT_ROOM_ID_KEY,
+  type GameModeOption,
+  type MatchRoomOptions,
+} from "../lib/colyseus";
 
 const RES_KEY_PREFIX = "predichess:reservation:";
 
@@ -37,10 +42,11 @@ export function CreateRoomPage() {
       // Store host seat reservation so the first tab consumes it (avoids phantom reserved seat → "locked").
       try {
         sessionStorage.setItem(`${RES_KEY_PREFIX}${code}`, JSON.stringify(reservation));
+        sessionStorage.setItem(PREDICT_ROOM_ID_KEY, code);
       } catch {
         // ignore storage errors; fallback to normal join
       }
-      navigate(`/play/${code}`, { replace: true });
+      navigate(`/room/${code}`, { replace: true });
     } catch {
       setError("Impossibile creare la stanza. Riprova.");
     } finally {

@@ -65,7 +65,7 @@ export function JoinRoomPage() {
     e.preventDefault();
     const c = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (c.length < 4) return;
-    navigate(`/play/${c}`);
+    navigate(`/room/${c}`);
   }
 
   return (
@@ -108,7 +108,7 @@ export function JoinRoomPage() {
                     <td className="px-3 py-2">
                       <button
                         type="button"
-                        onClick={() => navigate(`/play/${code}`)}
+                        onClick={() => navigate(`/room/${code}`)}
                         className="font-mono text-slate-200 hover:text-white"
                       >
                         {code}

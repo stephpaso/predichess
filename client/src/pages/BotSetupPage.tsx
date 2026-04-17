@@ -69,7 +69,7 @@ export function BotSetupPage() {
     setCreating(true);
     setError(null);
     try {
-      const { roomId, roomCode: code, reservation } = await createBotRoom({
+      const { roomCode: code, reservation } = await createBotRoom({
         botElo: difficulty.elo,
         color,
         predictiveMoves: normalized.s,
@@ -81,9 +81,7 @@ export function BotSetupPage() {
         // ignore
       }
       // also include resolved roomId as fallback if storage is unavailable
-      navigate(`/play/${code}?rid=${encodeURIComponent(roomId)}`, {
-        replace: true,
-      });
+      navigate(`/room/${code}`, { replace: true });
     } catch {
       setError("Impossibile creare la partita contro bot. Riprova.");
     } finally {
