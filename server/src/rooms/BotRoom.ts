@@ -1,7 +1,12 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
 import { Chess } from "chess.js";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
-import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
+import {
+  loserForIgnoredCheckIfAny,
+  padMovesN,
+  resolveOneStep,
+  type PlannedMoveInput,
+} from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
 import { registerRoomCode, releaseRoomCode } from "../registry.js";
@@ -11,9 +16,14 @@ import type { IBotEngine } from "../bot/IBotEngine.js";
 import { HeuristicEngine } from "../bot/HeuristicEngine.js";
 
 const TICK_MS = 100;
-const MAX_ROUNDS = 40;
 const IDLE_DISPOSE_MS = 3 * 60_000;
 const BOT_SESSION_ID = "BOT";
+/** Bot vs umano: annulla se l'umano non mette mosse negli slot per così tanti round di fila (il bot muove sempre). */
+const CONSECUTIVE_EMPTY_HUMAN_ROUNDS = 10;
+
+function planHasAnyMove(moves: PlannedMoveInput[]): boolean {
+  return moves.some((m) => !!m.from && !!m.to);
+}
 
 function withFenTurn(fen: string, turn: "w" | "b"): string {
   const parts = fen.trim().split(/\s+/);
@@ -22,7 +32,7 @@ function withFenTurn(fen: string, turn: "w" | "b"): string {
   return parts.join(" ");
 }
 
-export class BotRoom extends Room<PredictChessState> {
+export class BotRoom extends Room<{ state: PredictChessState }> {
   maxClients = 1;
   private roomCode: string = "";
   private planMs = 20_000;
@@ -36,6 +46,7 @@ export class BotRoom extends Room<PredictChessState> {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
   private pendingReconnections = new Set<string>();
+  private consecutiveHumanEmptyRounds = 0;
 
   private botEngine: IBotEngine;
 
@@ -73,7 +84,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.broadcast("status", this.buildStatus());
   }
 
-  onCreate(
+  async onCreate(
     options: {
       roomCode?: string;
       color?: "white" | "black" | "random";
@@ -122,8 +133,8 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.gameMode = this.gameMode;
 
     onRoomCreated();
-    this.setPrivate(true);
-    this.setMetadata({
+    await this.setPrivate(true);
+    await this.setMetadata({
       isBot: true,
       started: true,
       predictiveSlots: this.predictiveSlots,
@@ -177,10 +188,11 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.players.set(BOT_SESSION_ID, bot);
 
     onUserConnected();
-    this.beginMatch();
+    void this.beginMatch();
   }
 
-  async onLeave(client: Client, consented: boolean) {
+  async onLeave(client: Client, code: number) {
+    const consented = code === CloseCode.CONSENTED;
     console.log(`[BotRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
     if (client.sessionId === BOT_SESSION_ID) {
       return;
@@ -231,7 +243,7 @@ export class BotRoom extends Room<PredictChessState> {
     onRoomDisposed();
   }
 
-  private beginMatch() {
+  private async beginMatch() {
     this.state.fen =
       this.gameMode === "shuffle" ? pickRandomMidgameFen() : new Chess().fen();
     this.state.winner = "";
@@ -239,6 +251,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
+    this.consecutiveHumanEmptyRounds = 0;
     this.state.phase = "planning";
     this.startPlanningPhase();
   }
@@ -407,6 +420,17 @@ export class BotRoom extends Room<PredictChessState> {
     const wm = this.plannedToInput(this.state.whiteMoves);
     const bm = this.plannedToInput(this.state.blackMoves);
 
+    const humanMoves = this.playerIsWhite ? wm : bm;
+    if (!planHasAnyMove(humanMoves)) {
+      this.consecutiveHumanEmptyRounds++;
+      if (this.consecutiveHumanEmptyRounds >= CONSECUTIVE_EMPTY_HUMAN_ROUNDS) {
+        this.endGame("draw", "stall_empty_plans");
+        return;
+      }
+    } else {
+      this.consecutiveHumanEmptyRounds = 0;
+    }
+
     const ignoredCheckLoser = loserForIgnoredCheckIfAny(this.state.fen, wm, bm);
     if (ignoredCheckLoser) {
       this.endGame(ignoredCheckLoser === "white" ? "black" : "white", "ignored_check");
@@ -469,11 +493,6 @@ export class BotRoom extends Room<PredictChessState> {
     this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
     this.state.roundIndex++;
 
-    if (this.state.roundIndex >= MAX_ROUNDS) {
-      this.endGame("draw", "max_rounds");
-      return;
-    }
-
     const chess = new Chess();
     chess.load(fen);
     if (chess.isCheckmate()) {
@@ -499,14 +518,18 @@ export class BotRoom extends Room<PredictChessState> {
 
   private endGame(
     winner: "white" | "black" | "draw",
-    reason: "king" | "checkmate" | "draw" | "disconnect" | "max_rounds" | "resign" | "ignored_check"
+    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "stall_empty_plans"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
     this.state.phase = "finished";
     this.state.winner = winner;
     this.state.gameOverReason =
-      reason === "ignored_check" ? "Sconfitta per mancata uscita dallo scacco" : "";
+      reason === "ignored_check"
+        ? "Sconfitta per mancata uscita dallo scacco"
+        : reason === "stall_empty_plans"
+          ? "Partita annullata: non hai programmato mosse negli slot per troppi round di fila."
+          : "";
     this.state.timerMs = 0;
     this.broadcastStatus();
     if (!this.ending) {

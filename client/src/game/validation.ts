@@ -79,6 +79,17 @@ export function isInCheckForSide(fen: string, color: Color): boolean {
   return c.isCheck();
 }
 
+/** Square of `color`'s king in `fen` (piece placement only; ignores side to move). */
+export function getKingSquareOf(fen: string, color: Color): Square | null {
+  const c = new Chess();
+  c.load(fen.trim());
+  for (const sq of ALL_SQUARES) {
+    const p = c.get(sq);
+    if (p && p.type === "k" && p.color === color) return sq;
+  }
+  return null;
+}
+
 /** Legal destination squares for planning (includes anticipated capture of own piece). */
 export function getLegalTargetsForPlanning(
   fen: string,
@@ -124,4 +135,30 @@ export function findVerboseMoveTo(
     }
   }
   return found ? { to: toN, promotion: found.promotion, san: found.san } : null;
+}
+
+/** Applica una mossa di pianificazione sul FEN (rimuove il pezzo amico sul `to` se serve), come sul server. */
+export function applyPlanningMove(
+  fen: string,
+  from: Square,
+  to: Square,
+  color: Color
+): string | null {
+  const toN = normalizeCastleTarget(fen, from, to, color);
+  const c = forkForSide(fen, color);
+  const piece = c.get(from);
+  if (!piece || piece.color !== color) return null;
+  const moves = c.moves({ square: from, verbose: true });
+  let found = moves.find((m) => m.to === toN);
+  if (!found) {
+    const target = c.get(toN);
+    if (target && target.color === color) {
+      c.remove(toN);
+      found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+    }
+  }
+  if (!found) return null;
+  const result = c.move({ from, to: toN, promotion: found.promotion });
+  if (!result) return null;
+  return c.fen();
 }

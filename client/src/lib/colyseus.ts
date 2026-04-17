@@ -1,7 +1,10 @@
-import { Client } from "colyseus.js";
-import type { Room } from "colyseus.js";
-import { MatchMakeError } from "colyseus.js";
+import { Client } from "@colyseus/sdk";
+import type { Room } from "@colyseus/sdk";
+import { MatchMakeError } from "@colyseus/sdk";
 import { PredictChessState } from "../schema/PredictChessState";
+
+/** SDK 0.17 `Room` is `Room<RoomType, State>`; we only need the decoded root state type here. */
+export type PredictRoom = Room<any, PredictChessState>;
 
 /** Short room code from URL; matches `predict_roomId` in sessionStorage. */
 export function normalizeRoomCode(roomId: string): string {
@@ -13,7 +16,7 @@ export const PREDICT_ROOM_ID_KEY = "predict_roomId";
 /** sessionStorage: Colyseus `room.reconnectionToken` for `client.reconnect()` after F5. */
 export const PREDICT_SESSION_ID_KEY = "predict_sessionId";
 
-export function persistPredictSession(roomCode: string, room: Room<PredictChessState>): void {
+export function persistPredictSession(roomCode: string, room: PredictRoom): void {
   const code = normalizeRoomCode(roomCode);
   if (!code) return;
   try {
@@ -84,11 +87,12 @@ export type MatchRoomOptions = {
   mode?: GameModeOption;
 };
 
-export async function consumePredictReservation(reservation: unknown): Promise<Room<PredictChessState>> {
-  // colyseus.js types for seat reservations differ across versions; treat as unknown at runtime.
+export async function consumePredictReservation(reservation: unknown): Promise<PredictRoom> {
+  // Seat reservation shape differs across Colyseus versions; treat as unknown at runtime.
   type SeatReservationParam = Parameters<Client["consumeSeatReservation"]>[0];
-  return getColyseusClient().consumeSeatReservation<PredictChessState>(
-    reservation as SeatReservationParam
+  return getColyseusClient().consumeSeatReservation(
+    reservation as SeatReservationParam,
+    PredictChessState
   );
 }
 
@@ -99,7 +103,7 @@ export async function consumePredictReservation(reservation: unknown): Promise<R
 export async function consumePredictReservationForCode(
   roomCode: string,
   reservation: unknown
-): Promise<Room<PredictChessState>> {
+): Promise<PredictRoom> {
   const key = normalizeRoomCode(roomCode);
   const room = await consumePredictReservation(reservation);
   const existing = joins.get(key);
@@ -123,8 +127,8 @@ export async function consumePredictReservationForCode(
 }
 
 type JoinEntry = {
-  promise: Promise<Room<PredictChessState>>;
-  room?: Room<PredictChessState>;
+  promise: Promise<PredictRoom>;
+  room?: PredictRoom;
   refCount: number;
 };
 
@@ -135,7 +139,7 @@ type JoinEntry = {
  */
 const joins = new Map<string, JoinEntry>();
 
-export async function joinPredictRoom(roomId: string): Promise<Room<PredictChessState>> {
+export async function joinPredictRoom(roomId: string): Promise<PredictRoom> {
   const key = normalizeRoomCode(roomId);
   const existing = joins.get(key);
   if (existing) {
@@ -158,7 +162,7 @@ export async function joinPredictRoom(roomId: string): Promise<Room<PredictChess
 export async function joinPredictRoomByResolvedId(
   roomCode: string,
   resolvedRoomId: string
-): Promise<Room<PredictChessState>> {
+): Promise<PredictRoom> {
   const key = normalizeRoomCode(roomCode);
   const existing = joins.get(key);
   if (existing) {
@@ -168,7 +172,7 @@ export async function joinPredictRoomByResolvedId(
 
   const entry: JoinEntry = {
     refCount: 1,
-    promise: getColyseusClient().joinById<PredictChessState>(resolvedRoomId),
+    promise: getColyseusClient().joinById(resolvedRoomId, {}, PredictChessState),
   };
   joins.set(key, entry);
 
@@ -193,7 +197,7 @@ export async function joinPredictRoomByResolvedId(
 /**
  * Reconnect after involuntary disconnect (e.g. F5) using the stored Colyseus reconnection token.
  */
-export async function reconnectPredictRoom(roomCode: string, reconnectionToken: string): Promise<Room<PredictChessState>> {
+export async function reconnectPredictRoom(roomCode: string, reconnectionToken: string): Promise<PredictRoom> {
   const key = normalizeRoomCode(roomCode);
   const existing = joins.get(key);
   if (existing) {
@@ -203,7 +207,7 @@ export async function reconnectPredictRoom(roomCode: string, reconnectionToken: 
 
   const entry: JoinEntry = {
     refCount: 1,
-    promise: getColyseusClient().reconnect<PredictChessState>(reconnectionToken),
+    promise: getColyseusClient().reconnect(reconnectionToken, PredictChessState),
   };
   joins.set(key, entry);
 
@@ -224,7 +228,7 @@ export async function reconnectPredictRoom(roomCode: string, reconnectionToken: 
   return entry.promise;
 }
 
-export async function releasePredictRoom(roomId: string, room: Room<PredictChessState>) {
+export async function releasePredictRoom(roomId: string, room: PredictRoom) {
   const key = normalizeRoomCode(roomId);
   const entry = joins.get(key);
   if (!entry) {
@@ -281,8 +285,12 @@ export type AvailableRoomRow = {
 };
 
 export async function getAvailablePredictRooms(): Promise<AvailableRoomRow[]> {
-  const rooms = (await getColyseusClient().getAvailableRooms("predict_chess")) as AvailableRoomRow[];
-  return rooms ?? [];
+  const base = apiBase || getColyseusEndpoint().replace(/\/$/, "");
+  const httpBase = base.replace(/^ws/i, "http");
+  const res = await fetch(`${httpBase}/match/available`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as AvailableRoomRow[];
+  return Array.isArray(data) ? data : [];
 }
 
 export function formatJoinError(err: unknown): string {

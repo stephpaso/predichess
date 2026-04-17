@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
-import type { Room } from "colyseus.js";
 import {
+  type PredictRoom,
   consumePredictReservationForCode,
   formatJoinError,
   joinPredictRoom,
@@ -21,12 +21,12 @@ import type {
   StepSnapshot,
 } from "../schema/PredictChessState";
 import {
+  applyPlanningMove,
   forkForSide,
-  findVerboseMoveTo,
+  getKingSquareOf,
   getLegalTargetsForPlanning,
   isInCheckForSide,
   isMoveLegalForSide,
-  withFenTurn,
 } from "../game/validation";
 
 type Planned = { from: Square; to: Square };
@@ -47,6 +47,18 @@ function planFromState(
     return { from: m.from as Square, to: m.to as Square };
   });
   return out;
+}
+
+/** Per slot: vince il server se ha from/to; altrimenti resta la mossa locale (draft non ancora in sync). */
+function mergePlanWithServer(prev: Planned[], synced: Planned[], slots: number): Planned[] {
+  const base = makeEmptyPlan(slots);
+  return base.map((_, i) => {
+    const s = synced[i];
+    const p = prev[i];
+    if (s?.from && s?.to) return { from: s.from, to: s.to };
+    if (p?.from && p?.to) return { from: p.from, to: p.to };
+    return { from: "" as Square, to: "" as Square };
+  });
 }
 
 /** Fase di anteprima: FEN reale + evidenziazione pezzi che muoveranno (prima di bianco/nero). */
@@ -92,6 +104,12 @@ function readArraySchema<T>(arr: unknown): T[] {
   return [];
 }
 
+/** Mosse pianificate dallo stato Colyseus: non usare `.toArray()` (può risultare vuoto durante i patch). */
+function readPlannedMovesArray(arr: unknown): Array<{ from: string; to: string }> {
+  const raw = readArraySchema<{ from?: string; to?: string }>(arr);
+  return raw.map((m) => ({ from: m?.from ?? "", to: m?.to ?? "" }));
+}
+
 const LAST_ANIM_ROUND_PREFIX = "predichess:lastAnimRound:";
 const lastAnimRoundMemory = new Map<string, number>();
 
@@ -129,7 +147,7 @@ function writeLastAnimatedRoundIndex(roomCode: string, n: number): void {
 export function GamePage() {
   const { roomId = "" } = useParams();
   const [error, setError] = useState<string | null>(null);
-  const [room, setRoom] = useState<Room<PredictChessState> | null>(null);
+  const [room, setRoom] = useState<PredictRoom | null>(null);
   const [phase, setPhase] = useState<string>("lobby");
   const [serverFen, setServerFen] = useState(() => new Chess().fen());
   const [timerMs, setTimerMs] = useState(0);
@@ -152,7 +170,7 @@ export function GamePage() {
   } | null>(null);
   const resolutionAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastValidFenRef = useRef<string>(new Chess().fen());
-  const roomRef = useRef<Room<PredictChessState> | null>(null);
+  const roomRef = useRef<PredictRoom | null>(null);
   const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
@@ -173,9 +191,9 @@ export function GamePage() {
       const code = p.toUpperCase().replace(/[^A-Z0-9]/g, "");
       return code.length >= 1 ? code : "";
     }
-    const sid = room?.id?.trim();
+    const sid = room?.roomId?.trim();
     return sid ? `rid:${sid}` : "";
-  }, [roomId, room?.id]);
+  }, [roomId, room?.roomId]);
 
   roomCodeRef.current = playbackRoomKey;
 
@@ -213,12 +231,18 @@ export function GamePage() {
     else if (me?.color === "black") setMyColor("b");
 
     if (nextPhase === "planning") {
-      const wm = s.whiteMoves?.toArray?.() ?? [];
-      const bm = s.blackMoves?.toArray?.() ?? [];
+      const wm = readPlannedMovesArray(s.whiteMoves);
+      const bm = readPlannedMovesArray(s.blackMoves);
       const raw = me?.color === "black" ? bm : wm;
       // New planning phase: reset local plan to empty, aligned to fresh serverFen.
       const isNewPlanning = prevPhase !== "planning" || nextRound !== prevRound;
-      setPlan(isNewPlanning ? makeEmptyPlan(slots) : planFromState(raw, slots));
+      const synced = planFromState(raw, slots);
+      setPlan((prev) => {
+        if (isNewPlanning) return makeEmptyPlan(slots);
+        // Il draft sul server spesso arriva slot-per-slot: non sostituire tutto il piano con `synced`
+        // (altrimenti resta solo la prima mossa e gli altri slot si azzerano a ogni patch).
+        return mergePlanWithServer(prev, synced, slots);
+      });
       if (isNewPlanning) {
         setActiveSlot(0);
         setPickFrom(null);
@@ -308,7 +332,7 @@ export function GamePage() {
   );
 
   useEffect(() => {
-    let joined: Room<PredictChessState> | null = null;
+    let joined: PredictRoom | null = null;
     let cancelled = false;
 
     (async () => {
@@ -485,13 +509,9 @@ export function GamePage() {
     let fen = baseFen;
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
-      const found = findVerboseMoveTo(fen, m.from, m.to, color);
-      if (!found) break;
-      const step = new Chess();
-      step.load(withFenTurn(fen, color));
-      const res = step.move({ from: m.from, to: found.to, promotion: found.promotion });
-      if (!res) break;
-      fen = step.fen();
+      const next = applyPlanningMove(fen, m.from, m.to, color);
+      if (!next) break;
+      fen = next;
     }
     return fen;
   }
@@ -622,6 +642,21 @@ export function GamePage() {
         backgroundSize: "100% 100%",
       };
     }
+    const fenForCheck = effectiveBoardFen;
+    if (fenForCheck?.trim()) {
+      const ring = "inset 0 0 0 3px rgba(220, 50, 50, 0.92)";
+      for (const color of ["w", "b"] as const) {
+        if (!isInCheckForSide(fenForCheck, color)) continue;
+        const sq = getKingSquareOf(fenForCheck, color);
+        if (!sq) continue;
+        const prev = st[sq];
+        st[sq] = {
+          ...prev,
+          boxShadow: prev?.boxShadow ? `${prev.boxShadow}, ${ring}` : ring,
+          backgroundColor: prev?.backgroundColor ?? "rgba(255, 65, 65, 0.32)",
+        };
+      }
+    }
     return st;
   }, [
     pickFrom,
@@ -632,6 +667,7 @@ export function GamePage() {
     failedSquare,
     pendingMoveSquares,
     isAnimating,
+    effectiveBoardFen,
   ]);
 
   const goHistoryBack = useCallback(() => {
@@ -702,7 +738,10 @@ export function GamePage() {
     }
     const baseFen = fenBeforeSlot(serverFen, plan, myColor, activeSlot);
     const legal = isMoveLegalForSide(baseFen, sourceSquare, targetSquare, myColor);
-    if (!legal) return false;
+    if (!legal) {
+      setToast("Mossa illegale");
+      return false;
+    }
 
     setPlan((prev) => {
       const next = prev.map((p) => ({ ...p }));
@@ -934,7 +973,7 @@ export function GamePage() {
       )}
 
       <div className="mt-1 flex w-full flex-col gap-3 lg:flex-row lg:items-start lg:justify-center">
-        <div className="w-full max-w-[min(100vw-24px,420px)] self-center">
+        <div className="w-full max-w-[min(100vw-24px,420px)] shrink-0 self-center">
           <Chessboard
             options={{
               position: effectiveBoardFen,
@@ -976,7 +1015,7 @@ export function GamePage() {
           />
         </div>
 
-        <div className="w-full lg:w-80">
+        <div className="w-full min-h-0 shrink-0 lg:w-80">
           <RoundHistoryPanel
             rounds={resolvedRoundsList}
             historyLines={historyLogList}
@@ -1087,8 +1126,10 @@ function RoundHistoryPanel({
         ? "Live"
         : `Storico: ${Math.min(totalFens, cursor + 1)}/${totalFens}`;
   return (
-    <div className="rounded-2xl border border-white/10 bg-slate-950 p-3">
-      <div className="flex items-center justify-between gap-2">
+    <div
+      className="flex max-h-[min(100vw-24px,420px)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 p-3 lg:h-[min(100vw-24px,420px)]"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2">
         <div className="flex items-baseline gap-2">
           <h2 className="text-sm font-semibold text-slate-100">Round precedenti</h2>
           {modeLabel && <span className="text-[11px] text-slate-500">{modeLabel}</span>}
@@ -1117,51 +1158,53 @@ function RoundHistoryPanel({
           <span className="text-[11px] text-slate-500">{rounds.length}</span>
         </div>
       </div>
-      {historyLines.length > 0 && (
-        <div className="mt-3 max-h-[28dvh] space-y-1.5 overflow-auto rounded-xl border border-white/5 bg-slate-900/50 p-2 lg:max-h-[min(36dvh,420px)]">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-            Log partita
+      <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 scrollbar-slate">
+        {historyLines.length > 0 && (
+          <div className="space-y-1.5 rounded-xl border border-white/5 bg-slate-900/50 p-2">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Log partita
+            </div>
+            {historyLines.map((line, i) => (
+              <p key={i} className="text-[11px] leading-snug text-slate-400">
+                {line}
+              </p>
+            ))}
           </div>
-          {historyLines.map((line, i) => (
-            <p key={i} className="text-[11px] leading-snug text-slate-400">
-              {line}
-            </p>
-          ))}
-        </div>
-      )}
-      <div className="mt-2 max-h-[40dvh] space-y-2 overflow-auto pr-1 lg:max-h-[min(62dvh,640px)]">
-        {rounds.length === 0 && (
-          <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>
         )}
-        {rounds.map((r, ri) => {
-          const steps = readArraySchema<StepSnapshot>(r.steps);
-          const movesText = steps
-            .map((s, i) => {
-              const w = s.whiteMove
-                ? `Bianco ${s.whiteMove.slice(0, 2)}→${s.whiteMove.slice(2)}`
-                : "Bianco —";
-              const b = s.blackMove
-                ? `Nero ${s.blackMove.slice(0, 2)}→${s.blackMove.slice(2)}`
-                : "Nero —";
-              return `S${i + 1}: ${w}, ${b}`;
-            })
-            .join(" · ");
-          const lastFen = steps.length ? steps[steps.length - 1].fenAfter : r.fenAfter;
-          return (
-            <button
-              key={ri}
-              type="button"
-              className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-left text-xs"
-              onClick={() => onSelectFen(lastFen)}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-slate-200">Round {r.roundIndex + 1}</span>
-                <span className="text-slate-500">vai</span>
-              </div>
-              <div className="mt-1 text-[11px] text-slate-500">{movesText || "—"}</div>
-            </button>
-          );
-        })}
+        <div className="space-y-2">
+          {rounds.length === 0 && (
+            <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>
+          )}
+          {rounds.map((r, ri) => {
+            const steps = readArraySchema<StepSnapshot>(r.steps);
+            const movesText = steps
+              .map((s, i) => {
+                const w = s.whiteMove
+                  ? `Bianco ${s.whiteMove.slice(0, 2)}→${s.whiteMove.slice(2)}`
+                  : "Bianco —";
+                const b = s.blackMove
+                  ? `Nero ${s.blackMove.slice(0, 2)}→${s.blackMove.slice(2)}`
+                  : "Nero —";
+                return `S${i + 1}: ${w}, ${b}`;
+              })
+              .join(" · ");
+            const lastFen = steps.length ? steps[steps.length - 1].fenAfter : r.fenAfter;
+            return (
+              <button
+                key={ri}
+                type="button"
+                className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-left text-xs"
+                onClick={() => onSelectFen(lastFen)}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-slate-200">Round {r.roundIndex + 1}</span>
+                  <span className="text-slate-500">vai</span>
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">{movesText || "—"}</div>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

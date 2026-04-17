@@ -12,10 +12,10 @@
     "test:bot": "tsx src/bot/HeuristicEngine.test.ts"
   },
   "dependencies": {
-    "@colyseus/core": "^0.15.57",
-    "@colyseus/schema": "^2.0.37",
-    "chess.js": "^1.0.0",
-    "colyseus": "^0.15.0",
+    "@colyseus/core": "^0.17.41",
+    "@colyseus/schema": "^4.0.8",
+    "@colyseus/ws-transport": "^0.17.9",
+    "chess.js": "^1.4.0",
     "express": "^4.21.0",
     "cors": "^2.8.5"
   },

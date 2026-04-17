@@ -1,4 +1,4 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
@@ -9,10 +9,15 @@ import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } fr
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
 
 const TICK_MS = 100;
-const MAX_ROUNDS = 40;
 const IDLE_DISPOSE_MS = 3 * 60_000;
+/** PvP: annulla la partita se per così tanti round di fila nessuno ha messo mosse negli slot. */
+const CONSECUTIVE_EMPTY_PLAN_ROUNDS_PVP = 5;
 
-export class GameRoom extends Room<PredictChessState> {
+function planHasAnyMove(moves: PlannedMoveInput[]): boolean {
+  return moves.some((m) => !!m.from && !!m.to);
+}
+
+export class GameRoom extends Room<{ state: PredictChessState }> {
   maxClients = 2;
   private roomCode: string = "";
   private planMs = 20_000;
@@ -28,6 +33,7 @@ export class GameRoom extends Room<PredictChessState> {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
   private pendingReconnections = new Set<string>();
+  private consecutiveEmptyPlanRoundsPvp = 0;
 
   private buildStatus() {
     return {
@@ -53,7 +59,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.broadcast("status", this.buildStatus());
   }
 
-  onCreate(
+  async onCreate(
     options: {
       roomCode?: string;
       hostColorPref?: "white" | "black" | "random";
@@ -103,8 +109,8 @@ export class GameRoom extends Room<PredictChessState> {
 
     onRoomCreated();
     // Only public rooms should be listed by getAvailableRooms().
-    this.setPrivate(!this.isPublic);
-    this.setMetadata({
+    await this.setPrivate(!this.isPublic);
+    await this.setMetadata({
       isPublic: this.isPublic,
       started: false,
       turnTimeSec,
@@ -166,11 +172,12 @@ export class GameRoom extends Room<PredictChessState> {
 
     if (this.clients.length === 2) {
       console.log(`[GameRoom] beginMatch roomId=${this.roomId} code=${this.roomCode}`);
-      this.beginMatch();
+      void this.beginMatch();
     }
   }
 
-  async onLeave(client: Client, consented: boolean) {
+  async onLeave(client: Client, code: number) {
+    const consented = code === CloseCode.CONSENTED;
     console.log(
       `[GameRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
     );
@@ -223,7 +230,7 @@ export class GameRoom extends Room<PredictChessState> {
     onRoomDisposed();
   }
 
-  private beginMatch() {
+  private async beginMatch() {
     this.state.fen =
       this.gameMode === "shuffle" ? pickRandomMidgameFen() : new Chess().fen();
     this.state.winner = "";
@@ -231,9 +238,10 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
+    this.consecutiveEmptyPlanRoundsPvp = 0;
     // Hide rooms once started; the Join list should only show pre-game lobbies.
-    this.setPrivate(true);
-    this.setMetadata({
+    await this.setPrivate(true);
+    await this.setMetadata({
       ...(this.metadata ?? {}),
       started: true,
     });
@@ -403,6 +411,18 @@ export class GameRoom extends Room<PredictChessState> {
     const wm = this.plannedToInput(this.state.whiteMoves);
     const bm = this.plannedToInput(this.state.blackMoves);
 
+    const whiteHas = planHasAnyMove(wm);
+    const blackHas = planHasAnyMove(bm);
+    if (!whiteHas && !blackHas) {
+      this.consecutiveEmptyPlanRoundsPvp++;
+      if (this.consecutiveEmptyPlanRoundsPvp >= CONSECUTIVE_EMPTY_PLAN_ROUNDS_PVP) {
+        this.endGame("draw", "stall_empty_plans");
+        return;
+      }
+    } else {
+      this.consecutiveEmptyPlanRoundsPvp = 0;
+    }
+
     const ignoredCheckLoser = loserForIgnoredCheckIfAny(this.state.fen, wm, bm);
     if (ignoredCheckLoser) {
       this.endGame(ignoredCheckLoser === "white" ? "black" : "white", "ignored_check");
@@ -467,12 +487,6 @@ export class GameRoom extends Room<PredictChessState> {
     this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
     this.state.roundIndex++;
 
-    if (this.state.roundIndex >= MAX_ROUNDS) {
-      const winner = this.materialWinner(fen);
-      this.endGame(winner, "max_rounds");
-      return;
-    }
-
     const chess = new Chess();
     chess.load(fen);
     if (chess.isCheckmate()) {
@@ -488,24 +502,6 @@ export class GameRoom extends Room<PredictChessState> {
     this.startPlanningPhase();
   }
 
-  private materialWinner(fen: string): "white" | "black" | "draw" {
-    const c = new Chess();
-    c.load(fen);
-    const values: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-    let w = 0;
-    let b = 0;
-    for (const row of c.board()) {
-      for (const p of row) {
-        if (!p) continue;
-        const v = values[p.type] ?? 0;
-        if (p.color === "w") w += v;
-        else b += v;
-      }
-    }
-    if (w === b) return "draw";
-    return w > b ? "white" : "black";
-  }
-
   private handleResign(client: Client) {
     if (this.state.phase === "finished" || this.ending) return;
     const p = this.state.players.get(client.sessionId);
@@ -516,14 +512,18 @@ export class GameRoom extends Room<PredictChessState> {
 
   private endGame(
     winner: "white" | "black" | "draw",
-    reason: "king" | "checkmate" | "draw" | "disconnect" | "max_rounds" | "resign" | "ignored_check"
+    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "stall_empty_plans"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
     this.state.phase = "finished";
     this.state.winner = winner;
     this.state.gameOverReason =
-      reason === "ignored_check" ? "Sconfitta per mancata uscita dallo scacco" : "";
+      reason === "ignored_check"
+        ? "Sconfitta per mancata uscita dallo scacco"
+        : reason === "stall_empty_plans"
+          ? "Partita annullata: per troppi round nessuno ha programmato mosse negli slot."
+          : "";
     this.state.timerMs = 0;
     this.broadcastStatus();
     if (!this.ending) {
