@@ -301,8 +301,6 @@ export function GamePage() {
   }, [plan, room, canEditPlan, myColor]);
 
   // Compute on each render; resolvedRounds is small and this avoids ArraySchema-in-place update edge cases.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _resolvedRoundsNonce = resolvedRoundsCount;
   const historyFens = (() => {
     const rounds = room?.state?.resolvedRounds?.toArray?.() ?? [];
     const out: string[] = [];
