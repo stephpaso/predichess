@@ -50,11 +50,14 @@ export type CreateRoomResponse = {
   reservation: unknown;
 };
 
+export type GameModeOption = "classic" | "shuffle";
+
 export type MatchRoomOptions = {
   hostColorPref: "white" | "black" | "random";
   turnTimeSec: number; // 10-60
   predictiveSlots: number; // 1-5
   isPublic: boolean;
+  mode?: GameModeOption;
 };
 
 export async function consumePredictReservation(reservation: unknown): Promise<Room<PredictChessState>> {
@@ -195,6 +198,7 @@ export type CreateBotRoomOptions = {
   color: "white" | "black" | "random";
   predictiveMoves: number; // 1-5
   turnTimeSec?: number; // optional (defaults server-side)
+  mode?: GameModeOption;
 };
 
 export async function createBotRoom(options: Partial<CreateBotRoomOptions> = {}): Promise<CreateRoomResponse> {

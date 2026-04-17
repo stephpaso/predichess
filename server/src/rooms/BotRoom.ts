@@ -5,6 +5,7 @@ import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveI
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
+import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
 import type { IBotEngine } from "../bot/IBotEngine.js";
 import { HeuristicEngine } from "../bot/HeuristicEngine.js";
 
@@ -26,6 +27,7 @@ export class BotRoom extends Room<PredictChessState> {
   private planMs = 20_000;
   private predictiveSlots = 3;
   private playerColorPref: "white" | "black" | "random" = "random";
+  private gameMode: GameMode = "classic";
   private playerIsWhite = true;
   private botElo = 1000;
   private planningEndsAt = 0;
@@ -76,9 +78,11 @@ export class BotRoom extends Room<PredictChessState> {
       predictiveMoves?: number;
       turnTimeSec?: number;
       botElo?: number;
+      mode?: "classic" | "shuffle";
     } = {}
   ) {
     this.roomCode = options?.roomCode ?? this.roomId;
+    this.gameMode = normalizeGameMode(options.mode);
     this.playerColorPref =
       options.color === "white" || options.color === "black" || options.color === "random"
         ? options.color
@@ -112,6 +116,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.predictiveSlots = this.predictiveSlots;
     this.state.isPublic = false;
     this.state.hostColorPref = "random";
+    this.state.gameMode = this.gameMode;
 
     onRoomCreated();
     this.setPrivate(true);
@@ -121,6 +126,7 @@ export class BotRoom extends Room<PredictChessState> {
       predictiveSlots: this.predictiveSlots,
       code: this.roomCode,
       botElo: this.botElo,
+      gameMode: this.gameMode,
     });
 
     this.onMessage("submit_plan", (client, message: { moves?: PlannedMoveInput[] }) => {
@@ -190,7 +196,8 @@ export class BotRoom extends Room<PredictChessState> {
   }
 
   private beginMatch() {
-    this.state.fen = new Chess().fen();
+    this.state.fen =
+      this.gameMode === "shuffle" ? pickRandomMidgameFen() : new Chess().fen();
     this.state.winner = "";
     this.state.gameOverReason = "";
     this.state.roundIndex = 0;

@@ -43,6 +43,8 @@ export class PredictChessState extends Schema {
   @type("number") predictiveSlots: number = 3; // 1-5
   @type("boolean") isPublic: boolean = true;
   @type("string") hostColorPref: string = "random"; // white | black | random
+  /** "classic" | "shuffle" — shuffle starts from a random balanced midgame FEN. */
+  @type("string") gameMode: string = "classic";
 
   @type({ map: Player }) players = new MapSchema<Player>();
 

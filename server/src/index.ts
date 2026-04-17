@@ -41,6 +41,7 @@ app.post("/match/create", async (req, res) => {
     turnTimeSec?: number;
     predictiveSlots?: number;
     isPublic?: boolean;
+    mode?: "classic" | "shuffle";
   };
   const turnTimeSecRaw = Number(body.turnTimeSec ?? 20);
   const predictiveSlotsRaw = Number(body.predictiveSlots ?? 3);
@@ -49,6 +50,8 @@ app.post("/match/create", async (req, res) => {
     body.hostColorPref === "white" || body.hostColorPref === "black" || body.hostColorPref === "random"
       ? body.hostColorPref
       : "random";
+
+  const mode = body.mode === "shuffle" ? "shuffle" : "classic";
 
   const turnTimeSec = Math.max(10, Math.min(60, Math.floor(turnTimeSecRaw || 0)));
   const predictiveSlots = Math.max(1, Math.min(5, Math.floor(predictiveSlotsRaw || 0)));
@@ -59,6 +62,7 @@ app.post("/match/create", async (req, res) => {
       turnTimeSec,
       predictiveSlots,
       isPublic,
+      mode,
     });
     registerRoomCode(roomCode, reservation.room.roomId);
     res.json({
@@ -81,11 +85,13 @@ app.post("/bot/create", async (req, res) => {
     color?: "white" | "black" | "random";
     predictiveMoves?: number;
     turnTimeSec?: number;
+    mode?: "classic" | "shuffle";
   };
   const botElo = Math.max(100, Math.min(3000, Math.floor(Number(body.botElo ?? 1000) || 0)));
   const color = body.color === "white" || body.color === "black" || body.color === "random" ? body.color : "random";
   const turnTimeSec = Math.max(10, Math.min(60, Math.floor(Number(body.turnTimeSec ?? 20) || 0)));
   const predictiveMoves = Math.max(1, Math.min(5, Math.floor(Number(body.predictiveMoves ?? 3) || 0)));
+  const mode = body.mode === "shuffle" ? "shuffle" : "classic";
 
   try {
     const reservation = await matchMaker.create("bot_chess", {
@@ -94,6 +100,7 @@ app.post("/bot/create", async (req, res) => {
       color,
       predictiveMoves,
       turnTimeSec,
+      mode,
     });
     registerRoomCode(roomCode, reservation.room.roomId);
     res.json({

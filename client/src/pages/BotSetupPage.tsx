@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createBotRoom } from "../lib/colyseus";
+import { createBotRoom, type GameModeOption } from "../lib/colyseus";
 
 const RES_KEY_PREFIX = "predichess:reservation:";
 
@@ -55,6 +55,7 @@ export function BotSetupPage() {
 
   const [difficulty, setDifficulty] = useState<Difficulty>(DIFFICULTIES[1]);
   const [color, setColor] = useState<"white" | "black" | "random">("random");
+  const [gameMode, setGameMode] = useState<GameModeOption>("classic");
   const [predictiveMoves, setPredictiveMoves] = useState<number>(3);
 
   const normalized = useMemo(() => {
@@ -72,6 +73,7 @@ export function BotSetupPage() {
         botElo: difficulty.elo,
         color,
         predictiveMoves: normalized.s,
+        mode: gameMode,
       });
       try {
         sessionStorage.setItem(`${RES_KEY_PREFIX}${code}`, JSON.stringify(reservation));
@@ -136,6 +138,32 @@ export function BotSetupPage() {
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
+          <label className="text-sm text-slate-300">Modalità di gioco</label>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {(
+              [
+                { id: "classic" as const, label: "Classico", hint: "Posizione iniziale" },
+                { id: "shuffle" as const, label: "Shuffle", hint: "Mediogioco casuale" },
+              ] as const
+            ).map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => setGameMode(o.id)}
+                className={`rounded-xl border px-3 py-3 text-left transition active:scale-[0.99] ${
+                  gameMode === o.id
+                    ? "border-indigo-500 bg-indigo-950/50 text-slate-50"
+                    : "border-white/10 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                }`}
+              >
+                <div className="text-sm font-medium">{o.label}</div>
+                <div className="mt-1 text-[11px] text-slate-500">{o.hint}</div>
+              </button>
+            ))}
           </div>
         </div>
 
