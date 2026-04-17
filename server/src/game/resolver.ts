@@ -31,52 +31,51 @@ function forkForSide(fen: string, color: Color): Chess {
   return c;
 }
 
+/**
+ * If king is dropped on own rook, map to the king's castling destination (g1/c1/g8/c8).
+ */
+export function normalizeCastleTarget(
+  fen: string,
+  from: Square,
+  to: Square,
+  color: Color
+): Square {
+  const c = forkForSide(fen, color);
+  const piece = c.get(from);
+  if (!piece || piece.type !== "k" || piece.color !== color) return to;
+  const atTo = c.get(to);
+  if (!atTo || atTo.type !== "r" || atTo.color !== color) return to;
+  const moves = c.moves({ square: from, verbose: true });
+  if (moves.some((m) => m.to === to)) return to;
+  const castles = moves.filter((m) => /[kq]/.test(m.flags ?? ""));
+  for (const m of castles) {
+    if (color === "w" && to === "h1" && m.flags.includes("k")) return m.to;
+    if (color === "w" && to === "a1" && m.flags.includes("q")) return m.to;
+    if (color === "b" && to === "h8" && m.flags.includes("k")) return m.to;
+    if (color === "b" && to === "a8" && m.flags.includes("q")) return m.to;
+  }
+  return castles[0]?.to ?? to;
+}
+
 export function isMoveLegalForSide(
   fen: string,
   from: Square,
   to: Square,
   color: Color
 ): boolean {
+  const toN = normalizeCastleTarget(fen, from, to, color);
   const c = forkForSide(fen, color);
   const piece = c.get(from);
   if (!piece || piece.color !== color) return false;
   const moves = c.moves({ square: from, verbose: true });
-  return moves.some((m) => m.to === to);
-}
-
-function pieceTypeAt(fen: string, sq: Square): "k" | "other" {
-  const c = new Chess();
-  c.load(fen);
-  const p = c.get(sq);
-  if (!p) return "other";
-  return p.type === "k" ? "k" : "other";
-}
-
-function applySanMove(
-  fen: string,
-  from: Square,
-  to: Square,
-  color: Color
-): { fen: string; capture?: string } | null {
-  const c = forkForSide(fen, color);
-  const piece = c.get(from);
-  if (!piece || piece.color !== color) return null;
-  const moves = c.moves({ square: from, verbose: true });
-  const found = moves.find((m) => m.to === to);
-  if (!found) return null;
-  const result = c.move({ from, to, promotion: found.promotion });
-  if (!result) return null;
-  const capture = result.captured ? `${color}:${result.captured}@${result.to}` : undefined;
-  return { fen: c.fen(), capture };
-}
-
-function applyMutualDestruction(fen: string, wFrom: Square, bFrom: Square, dest: Square): string {
-  const c = new Chess();
-  c.load(fen);
-  c.remove(wFrom);
-  c.remove(bFrom);
-  if (c.get(dest)) c.remove(dest);
-  return c.fen();
+  if (moves.some((m) => m.to === toN)) return true;
+  const target = c.get(toN);
+  if (target && target.color === color) {
+    c.remove(toN);
+    const moves2 = c.moves({ square: from, verbose: true });
+    return moves2.some((m) => m.to === toN);
+  }
+  return false;
 }
 
 function kingCaptureWinner(fen: string): "white" | "black" | "draw" | null {
@@ -90,8 +89,40 @@ function kingCaptureWinner(fen: string): "white" | "black" | "draw" | null {
   return null;
 }
 
+function applySanMove(
+  fen: string,
+  from: Square,
+  to: Square,
+  color: Color
+): { fen: string; capture?: string } | null {
+  const toN = normalizeCastleTarget(fen, from, to, color);
+  const c = forkForSide(fen, color);
+  const piece = c.get(from);
+  if (!piece || piece.color !== color) return null;
+  const moves = c.moves({ square: from, verbose: true });
+  let found = moves.find((m) => m.to === toN);
+  if (!found) {
+    const target = c.get(toN);
+    if (target && target.color === color) {
+      c.remove(toN);
+      const moves2 = c.moves({ square: from, verbose: true });
+      found = moves2.find((m) => m.to === toN);
+    }
+  }
+  if (!found) return null;
+  const result = c.move({ from, to: toN, promotion: found.promotion });
+  if (!result) return null;
+  const capture = result.captured
+    ? `${color}:${result.captured}@${result.to}`
+    : undefined;
+  return { fen: c.fen(), capture };
+}
+
 export type ResolutionStepResult = {
   fenAfter: string;
+  fenBeforeStep: string;
+  /** FEN after White's half-move; empty if White passed or move not applied. */
+  fenAfterWhite: string;
   gameOver: boolean;
   winner: "" | "white" | "black" | "draw";
   collision: boolean;
@@ -110,6 +141,8 @@ export function resolveOneStep(
   black: PlannedMoveInput
 ): ResolutionStepResult {
   let fen = fenBefore;
+  const fenBeforeStep = fenBefore;
+  let fenAfterWhite = "";
   const wPass = isPass(white);
   const bPass = isPass(black);
 
@@ -118,28 +151,22 @@ export function resolveOneStep(
   const bf = bPass ? null : normalizeSquare(black.from)!;
   const bt = bPass ? null : normalizeSquare(black.to)!;
 
-  let collision = false; // kept for UI backward-compat; sequential resolution makes it mostly irrelevant
+  let collision = false;
   const captures: string[] = [];
   let whiteApplied = false;
   let blackApplied = false;
 
-  // WHITE first
   if (!wPass && wf && wt) {
-    const wLegal = isMoveLegalForSide(fen, wf, wt, "w");
-    const wPiece = forkForSide(fen, "w").get(wf);
-    console.log(
-      `[resolveOneStep] WHITE from=${wf} to=${wt} legal=${wLegal} piece=${wPiece ? `${wPiece.color}${wPiece.type}` : "none"} fen=${fen}`
-    );
+    const wTo = normalizeCastleTarget(fen, wf, wt, "w");
+    const wLegal = isMoveLegalForSide(fen, wf, wTo, "w");
     if (wLegal) {
-      const next = applySanMove(fen, wf, wt, "w");
-      console.log(`[resolveOneStep] WHITE move result=`, next);
+      const next = applySanMove(fen, wf, wTo, "w");
       if (next?.fen) {
         fen = next.fen;
         whiteApplied = true;
+        fenAfterWhite = fen;
         if (next.capture) captures.push(next.capture);
       }
-    } else {
-      console.log(`[resolveOneStep] WHITE rejected: not in moves() list`);
     }
   }
 
@@ -147,6 +174,8 @@ export function resolveOneStep(
   if (mid) {
     return {
       fenAfter: fen,
+      fenBeforeStep,
+      fenAfterWhite,
       gameOver: true,
       winner: mid,
       collision,
@@ -156,23 +185,16 @@ export function resolveOneStep(
     };
   }
 
-  // BLACK second, on updated fen
   if (!bPass && bf && bt) {
-    const bLegal = isMoveLegalForSide(fen, bf, bt, "b");
-    const bPiece = forkForSide(fen, "b").get(bf);
-    console.log(
-      `[resolveOneStep] BLACK from=${bf} to=${bt} legal=${bLegal} piece=${bPiece ? `${bPiece.color}${bPiece.type}` : "none"} fen=${fen}`
-    );
+    const bTo = normalizeCastleTarget(fen, bf, bt, "b");
+    const bLegal = isMoveLegalForSide(fen, bf, bTo, "b");
     if (bLegal) {
-      const next = applySanMove(fen, bf, bt, "b");
-      console.log(`[resolveOneStep] BLACK move result=`, next);
+      const next = applySanMove(fen, bf, bTo, "b");
       if (next?.fen) {
         fen = next.fen;
         blackApplied = true;
         if (next.capture) captures.push(next.capture);
       }
-    } else {
-      console.log(`[resolveOneStep] BLACK rejected: not in moves() list`);
     }
   }
 
@@ -180,6 +202,8 @@ export function resolveOneStep(
   if (end) {
     return {
       fenAfter: fen,
+      fenBeforeStep,
+      fenAfterWhite,
       gameOver: true,
       winner: end,
       collision,
@@ -191,6 +215,8 @@ export function resolveOneStep(
 
   return {
     fenAfter: fen,
+    fenBeforeStep,
+    fenAfterWhite,
     gameOver: false,
     winner: "",
     collision,

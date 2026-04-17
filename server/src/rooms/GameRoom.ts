@@ -2,6 +2,7 @@ import { Room, Client } from "@colyseus/core";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
 import { padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
+import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 
@@ -85,6 +86,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.blackLocked = false;
     this.state.lastResolutionSteps.clear();
     this.state.resolvedRounds.clear();
+    this.state.historyLog.clear();
     this.state.turnTimeMs = this.planMs;
     this.state.predictiveSlots = this.predictiveSlots;
     this.state.isPublic = this.isPublic;
@@ -216,6 +218,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.winner = "";
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
+    this.state.historyLog.clear();
     // Hide rooms once started; the Join list should only show pre-game lobbies.
     this.setPrivate(true);
     this.setMetadata({
@@ -403,6 +406,7 @@ export class GameRoom extends Room<PredictChessState> {
 
       const snap = new StepSnapshot();
       snap.fenAfter = fen;
+      snap.fenAfterWhite = step.fenAfterWhite ?? "";
       snap.whiteMove = wm[i]?.from && wm[i]?.to ? `${wm[i]!.from}${wm[i]!.to}` : "";
       snap.blackMove = bm[i]?.from && bm[i]?.to ? `${bm[i]!.from}${bm[i]!.to}` : "";
       snap.whiteApplied = !!step.whiteApplied;
@@ -416,6 +420,7 @@ export class GameRoom extends Room<PredictChessState> {
       // `lastResolutionSteps` drives the current animation; `round.steps` is persisted history.
       const hist = new StepSnapshot();
       hist.fenAfter = snap.fenAfter;
+      hist.fenAfterWhite = snap.fenAfterWhite;
       hist.whiteMove = snap.whiteMove;
       hist.blackMove = snap.blackMove;
       hist.whiteApplied = snap.whiteApplied;
@@ -429,6 +434,7 @@ export class GameRoom extends Room<PredictChessState> {
         this.state.fen = fen;
         round.fenAfter = fen;
         this.state.resolvedRounds.push(round);
+        this.state.historyLog.push(formatRoundHistoryLine(round));
         this.endGame(step.winner, "king");
         return;
       }
@@ -437,6 +443,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.fen = fen;
     round.fenAfter = fen;
     this.state.resolvedRounds.push(round);
+    this.state.historyLog.push(formatRoundHistoryLine(round));
     this.state.roundIndex++;
 
     if (this.state.roundIndex >= MAX_ROUNDS) {

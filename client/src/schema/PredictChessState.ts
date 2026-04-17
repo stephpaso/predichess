@@ -13,6 +13,7 @@ export class PlannedMove extends Schema {
 
 export class StepSnapshot extends Schema {
   @type("string") fenAfter: string = "";
+  @type("string") fenAfterWhite: string = "";
   @type("string") whiteMove: string = "";
   @type("string") blackMove: string = "";
   @type("boolean") whiteApplied: boolean = false;
@@ -66,4 +67,6 @@ export class PredictChessState extends Schema {
   @type([StepSnapshot]) lastResolutionSteps = new ArraySchema<StepSnapshot>();
 
   @type([RoundSnapshot]) resolvedRounds = new ArraySchema<RoundSnapshot>();
+
+  @type(["string"]) historyLog = new ArraySchema<string>();
 }

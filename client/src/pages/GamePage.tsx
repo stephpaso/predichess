@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
@@ -11,7 +11,14 @@ import {
   releasePredictRoom,
 } from "../lib/colyseus";
 import type { PredictChessState } from "../schema/PredictChessState";
-import { isInCheckForSide, isMoveLegalForSide } from "../game/validation";
+import {
+  forkForSide,
+  findVerboseMoveTo,
+  getLegalTargetsForPlanning,
+  isInCheckForSide,
+  isMoveLegalForSide,
+  withFenTurn,
+} from "../game/validation";
 
 type Planned = { from: Square; to: Square };
 
@@ -33,12 +40,8 @@ function planFromState(
   return out;
 }
 
-function withFenTurn(fen: string, color: Color): string {
-  const parts = fen.trim().split(/\s+/);
-  if (parts.length < 2) return fen;
-  parts[1] = color;
-  return parts.join(" ");
-}
+const RESOLUTION_STEP_MS = 600;
+const BOARD_ANIM_MS = 280;
 
 export function GamePage() {
   const { roomId = "" } = useParams();
@@ -51,14 +54,17 @@ export function GamePage() {
   const [myColor, setMyColor] = useState<Color | null>(null);
   const [winner, setWinner] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
-  const [resolvedRoundsCount, setResolvedRoundsCount] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
   const [slotCount, setSlotCount] = useState(3);
   const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(3));
   const [locked, setLocked] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
-  const animTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const resolutionAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastValidFenRef = useRef<string>(new Chess().fen());
+  const roomRef = useRef<Room<PredictChessState> | null>(null);
+  const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
   const prevPhaseRef = useRef<string>("lobby");
@@ -66,6 +72,8 @@ export function GamePage() {
   const draftTimer = useRef<number | null>(null);
 
   const orientation = myColor === "b" ? "black" : "white";
+
+  roomRef.current = room;
 
   const applyState = useCallback((s: PredictChessState, sessionId: string) => {
     const nextPhase = s.phase ?? "lobby";
@@ -76,11 +84,13 @@ export function GamePage() {
     prevRoundRef.current = nextRound;
 
     setPhase(s.phase ?? "lobby");
-    if (s.fen) setServerFen(s.fen);
+    if (s.fen) {
+      setServerFen(s.fen);
+      lastValidFenRef.current = s.fen;
+    }
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
     setRoundIndex(nextRound);
-    setResolvedRoundsCount(s.resolvedRounds?.length ?? 0);
     const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
     setSlotCount(slots);
 
@@ -104,6 +114,7 @@ export function GamePage() {
         setActiveSlot(0);
         setPickFrom(null);
         setHistoryCursor(null);
+        autoConfirmRoundRef.current = -1;
       }
       if (me?.color === "white") setLocked(s.whiteLocked);
       else if (me?.color === "black") setLocked(s.blackLocked);
@@ -140,12 +151,12 @@ export function GamePage() {
       setPhase(nextPhase);
       if (msg.fen) {
         setServerFen(msg.fen);
+        lastValidFenRef.current = msg.fen;
         if (nextPhase === "planning" || nextPhase === "lobby") setDisplayFen(msg.fen);
       }
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
       setRoundIndex(nextRound);
-      setResolvedRoundsCount(room?.state?.resolvedRounds?.length ?? 0);
       const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
       setSlotCount(slots);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
@@ -164,10 +175,11 @@ export function GamePage() {
           setActiveSlot(0);
           setPickFrom(null);
           setHistoryCursor(null);
+          autoConfirmRoundRef.current = -1;
         }
       }
     },
-    [slotCount, room?.state?.resolvedRounds?.length]
+    [slotCount]
   );
 
   useEffect(() => {
@@ -207,35 +219,69 @@ export function GamePage() {
     return () => {
       cancelled = true;
       if (joined) void releasePredictRoom(roomId, joined);
-      if (animTimer.current) clearInterval(animTimer.current);
+      if (resolutionAnimTimer.current) clearTimeout(resolutionAnimTimer.current);
     };
   }, [roomId, search, applyState, applyStatus]);
 
-  useEffect(() => {
-    if (!room?.state || phase !== "resolution") return;
-    const steps = room.state.lastResolutionSteps?.toArray?.() ?? [];
-    if (animTimer.current) clearInterval(animTimer.current);
+  useLayoutEffect(() => {
+    if (!room?.state || phase !== "resolution") {
+      if (phase !== "resolution") setIsAnimating(false);
+      return;
+    }
+    if (resolutionAnimTimer.current) {
+      clearTimeout(resolutionAnimTimer.current);
+      resolutionAnimTimer.current = null;
+    }
 
-    const startId = window.setTimeout(() => {
-      if (steps.length === 0) {
-        setDisplayFen(room.state.fen);
+    const steps = room.state.lastResolutionSteps?.toArray?.() ?? [];
+    const rounds = room.state.resolvedRounds?.toArray?.() ?? [];
+    const lastRound = rounds[rounds.length - 1];
+    const fenBeforeRound =
+      (lastRound?.fenBefore ?? "").trim() || lastValidFenRef.current || room.state.fen;
+
+    const changes: string[] = [];
+    let prev = fenBeforeRound;
+    for (const s of steps) {
+      const w = (s.fenAfterWhite ?? "").trim();
+      if (w && w !== prev) {
+        changes.push(w);
+        prev = w;
+      }
+      const a = (s.fenAfter ?? "").trim();
+      if (a && a !== prev) {
+        changes.push(a);
+        prev = a;
+      }
+    }
+
+    setIsAnimating(true);
+    setDisplayFen(fenBeforeRound);
+
+    let idx = 0;
+    const tick = () => {
+      const r = roomRef.current;
+      if (!r?.state || r.state.phase !== "resolution") {
+        setIsAnimating(false);
         return;
       }
-      let i = 0;
-      setDisplayFen(steps[0]?.fenAfter ?? room.state.fen);
-      animTimer.current = setInterval(() => {
-        i += 1;
-        if (i >= steps.length) {
-          if (animTimer.current) clearInterval(animTimer.current);
-          return;
-        }
-        setDisplayFen(steps[i].fenAfter);
-      }, 650);
-    }, 0);
+      if (idx >= changes.length) {
+        setIsAnimating(false);
+        setDisplayFen(r.state.fen);
+        setHistoryCursor(null);
+        resolutionAnimTimer.current = null;
+        return;
+      }
+      setDisplayFen(changes[idx]);
+      idx += 1;
+      resolutionAnimTimer.current = window.setTimeout(tick, RESOLUTION_STEP_MS);
+    };
+    resolutionAnimTimer.current = window.setTimeout(tick, RESOLUTION_STEP_MS);
 
     return () => {
-      window.clearTimeout(startId);
-      if (animTimer.current) clearInterval(animTimer.current);
+      if (resolutionAnimTimer.current) {
+        clearTimeout(resolutionAnimTimer.current);
+        resolutionAnimTimer.current = null;
+      }
     };
   }, [phase, room, roundIndex]);
 
@@ -245,16 +291,19 @@ export function GamePage() {
     let fen = baseFen;
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
+      const found = findVerboseMoveTo(fen, m.from, m.to, color);
+      if (!found) break;
       const step = new Chess();
       step.load(withFenTurn(fen, color));
-      const verbose = step.moves({ square: m.from, verbose: true });
-      const found = verbose.find((mv) => mv.to === m.to);
-      if (!found) break;
-      const res = step.move({ from: m.from, to: m.to, promotion: found.promotion });
+      const res = step.move({ from: m.from, to: found.to, promotion: found.promotion });
       if (!res) break;
       fen = step.fen();
     }
     return fen;
+  }
+
+  function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
+    return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
   }
 
   const planningFen = useMemo(() => {
@@ -283,6 +332,10 @@ export function GamePage() {
       return Math.min(Math.max(0, cur), max);
     });
   }, [slotCount]);
+
+  useEffect(() => {
+    setPickFrom(null);
+  }, [activeSlot]);
 
   // Send draft plan to server (for auto-confirm on timeout).
   useEffect(() => {
@@ -315,7 +368,37 @@ export function GamePage() {
 
   const viewingHistory =
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
-  const effectiveBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
+  const rawBoardFen = viewingHistory ? historyFens[historyCursor!] : boardFen;
+  const effectiveBoardFen =
+    rawBoardFen && rawBoardFen.trim() ? rawBoardFen : lastValidFenRef.current;
+
+  const baseFenActiveSlot = useMemo(() => {
+    if (!myColor) return serverFen;
+    return fenBeforeSlot(serverFen, plan, myColor, activeSlot);
+  }, [serverFen, plan, myColor, activeSlot]);
+
+  const legalTargetsForPick = useMemo(() => {
+    if (!pickFrom || !myColor || phase !== "planning") return new Set<string>();
+    return new Set(getLegalTargetsForPlanning(baseFenActiveSlot, pickFrom, myColor));
+  }, [pickFrom, myColor, phase, baseFenActiveSlot]);
+
+  const customSquareStyles = useMemo(() => {
+    const st: Record<string, import("react").CSSProperties> = {};
+    if (!pickFrom || phase !== "planning" || !canEditPlan || viewingHistory) return st;
+    st[pickFrom] = { backgroundColor: "rgba(255, 220, 80, 0.35)" };
+    const dot =
+      "radial-gradient(circle, rgba(0,0,0,0.55) 22%, transparent 24%), radial-gradient(circle, rgba(255,255,255,0.2) 22%, transparent 24%)";
+    for (const sq of legalTargetsForPick) {
+      if (sq === pickFrom) continue;
+      st[sq] = {
+        background: dot,
+        backgroundColor: "rgba(120, 180, 255, 0.12)",
+        backgroundPosition: "center",
+        backgroundSize: "100% 100%",
+      };
+    }
+    return st;
+  }, [pickFrom, phase, canEditPlan, viewingHistory, legalTargetsForPick]);
 
   const goHistoryBack = useCallback(() => {
     if (historyFens.length === 0) return;
@@ -358,10 +441,6 @@ export function GamePage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [goHistoryBack, goHistoryForward]);
-
-  function fenBeforeSlot(baseFen: string, nextPlan: Planned[], color: Color, slotIndex: number): string {
-    return computePlanningFen(baseFen, nextPlan.slice(0, Math.max(0, slotIndex)), color);
-  }
 
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => {
@@ -424,6 +503,34 @@ export function GamePage() {
     room.send("submit_plan", { moves });
     setLocked(true);
   }
+
+  useEffect(() => {
+    if (!room || !canEditPlan || !myColor || viewingHistory || locked) return;
+    if (phase !== "planning") return;
+    const full = plan.every((p) => !!(p.from && p.to));
+    if (!full) return;
+    if (autoConfirmRoundRef.current === roundIndex) return;
+    if (inCheckAtStart) {
+      const hasAnyMove = plan.some((p) => !!(p.from && p.to));
+      if (!hasAnyMove) return;
+    }
+    autoConfirmRoundRef.current = roundIndex;
+    const moves = plan.map((p) =>
+      p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
+    );
+    room.send("submit_plan", { moves });
+    setLocked(true);
+  }, [
+    plan,
+    room,
+    canEditPlan,
+    myColor,
+    viewingHistory,
+    locked,
+    phase,
+    roundIndex,
+    inCheckAtStart,
+  ]);
 
   const slotsUi = useMemo(() => plan, [plan]);
 
@@ -560,6 +667,7 @@ export function GamePage() {
       {phase === "resolution" && (
         <p className="mb-3 text-center text-sm text-slate-400">
           Risoluzione — round {roundIndex + 1}
+          {isAnimating ? " · animazione" : ""}
         </p>
       )}
 
@@ -593,16 +701,34 @@ export function GamePage() {
             options={{
               position: effectiveBoardFen,
               boardOrientation: orientation,
+              animationDurationInMs: BOARD_ANIM_MS,
+              squareStyles: customSquareStyles,
               allowDragging: !!canEditPlan && !viewingHistory,
               onSquareClick: ({ square }) => {
                 const sq = square as Square;
                 if (!canEditPlan || !myColor || viewingHistory) return;
+                const base = fenBeforeSlot(serverFen, plan, myColor, activeSlot);
+                const c = forkForSide(base, myColor);
                 if (!pickFrom) {
+                  const piece = c.get(sq);
+                  if (piece && piece.color === myColor) setPickFrom(sq);
+                  return;
+                }
+                if (sq === pickFrom) {
+                  setPickFrom(null);
+                  return;
+                }
+                const onDest = c.get(sq);
+                if (onDest && onDest.color === myColor) {
                   setPickFrom(sq);
                   return;
                 }
-                const ok = onPieceDrop(pickFrom, sq);
-                if (ok) setPickFrom(null);
+                if (legalTargetsForPick.has(sq)) {
+                  const ok = onPieceDrop(pickFrom, sq);
+                  if (ok) setPickFrom(null);
+                  return;
+                }
+                setPickFrom(null);
               },
               onPieceDrop: ({ sourceSquare, targetSquare }) => {
                 if (!targetSquare) return false;
@@ -614,8 +740,8 @@ export function GamePage() {
 
         <div className="w-full lg:w-80">
           <RoundHistoryPanel
-            key={resolvedRoundsCount}
             rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
+            historyLines={room?.state?.historyLog?.toArray?.() ?? []}
             cursor={historyCursor}
             totalFens={historyFens.length}
             onBack={goHistoryBack}
@@ -690,6 +816,7 @@ export function GamePage() {
 
 function RoundHistoryPanel({
   rounds,
+  historyLines,
   cursor,
   totalFens,
   onBack,
@@ -706,6 +833,7 @@ function RoundHistoryPanel({
         }
       | Array<{ fenAfter: string; whiteMove: string; blackMove: string }>;
   }>;
+  historyLines: string[];
   cursor: number | null;
   totalFens: number;
   onBack: () => void;
@@ -751,6 +879,18 @@ function RoundHistoryPanel({
           <span className="text-[11px] text-slate-500">{rounds.length}</span>
         </div>
       </div>
+      {historyLines.length > 0 && (
+        <div className="mt-3 max-h-[28dvh] space-y-1.5 overflow-auto rounded-xl border border-white/5 bg-slate-900/50 p-2 lg:max-h-[min(36dvh,420px)]">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            Log partita
+          </div>
+          {historyLines.map((line, i) => (
+            <p key={i} className="text-[11px] leading-snug text-slate-400">
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
       <div className="mt-2 max-h-[40dvh] space-y-2 overflow-auto pr-1 lg:max-h-[min(62dvh,640px)]">
         {rounds.length === 0 && (
           <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>

@@ -2,6 +2,7 @@ import { Room, Client } from "@colyseus/core";
 import { Chess } from "chess.js";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
+import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import type { IBotEngine } from "../bot/IBotEngine.js";
@@ -104,6 +105,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.blackLocked = false;
     this.state.lastResolutionSteps.clear();
     this.state.resolvedRounds.clear();
+    this.state.historyLog.clear();
     this.state.turnTimeMs = this.planMs;
     this.state.predictiveSlots = this.predictiveSlots;
     this.state.isPublic = false;
@@ -190,6 +192,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.winner = "";
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
+    this.state.historyLog.clear();
     this.state.phase = "planning";
     this.startPlanningPhase();
   }
@@ -373,6 +376,7 @@ export class BotRoom extends Room<PredictChessState> {
 
       const snap = new StepSnapshot();
       snap.fenAfter = fen;
+      snap.fenAfterWhite = step.fenAfterWhite ?? "";
       snap.whiteMove = wm[i]?.from && wm[i]?.to ? `${wm[i]!.from}${wm[i]!.to}` : "";
       snap.blackMove = bm[i]?.from && bm[i]?.to ? `${bm[i]!.from}${bm[i]!.to}` : "";
       snap.whiteApplied = !!step.whiteApplied;
@@ -384,6 +388,7 @@ export class BotRoom extends Room<PredictChessState> {
 
       const hist = new StepSnapshot();
       hist.fenAfter = snap.fenAfter;
+      hist.fenAfterWhite = snap.fenAfterWhite;
       hist.whiteMove = snap.whiteMove;
       hist.blackMove = snap.blackMove;
       hist.whiteApplied = snap.whiteApplied;
@@ -397,6 +402,7 @@ export class BotRoom extends Room<PredictChessState> {
         this.state.fen = fen;
         round.fenAfter = fen;
         this.state.resolvedRounds.push(round);
+        this.state.historyLog.push(formatRoundHistoryLine(round));
         this.endGame(step.winner, "king");
         return;
       }
@@ -405,6 +411,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.fen = fen;
     round.fenAfter = fen;
     this.state.resolvedRounds.push(round);
+    this.state.historyLog.push(formatRoundHistoryLine(round));
     this.state.roundIndex++;
 
     if (this.state.roundIndex >= MAX_ROUNDS) {

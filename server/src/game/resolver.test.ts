@@ -100,6 +100,22 @@ function run() {
     if (!res || typeof res.fenAfter !== "string") throw new Error("Expected resolution result");
   }
 
+  // Case 5: Planned "capture" of own piece — knight takes square occupied by own pawn.
+  {
+    const fenFriendly = "7k/8/8/8/8/2P5/8/1N2K3 w - - 0 1";
+    const res = resolveOneStep(
+      fenFriendly,
+      { from: "b1", to: "c3" },
+      { from: "", to: "" }
+    );
+    if (!res.whiteApplied) throw new Error("Expected white friendly-capture to apply");
+    expectPieceAt(res.fenAfter, "c3", "wn");
+    expectPieceAt(res.fenAfter, "b1", null);
+    if (!res.fenAfterWhite || res.fenAfterWhite !== res.fenAfter) {
+      throw new Error("Expected fenAfterWhite after lone white move");
+    }
+  }
+
   console.log("[resolver.test] OK");
 }
 
