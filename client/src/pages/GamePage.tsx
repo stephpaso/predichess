@@ -40,8 +40,10 @@ function planFromState(
   return out;
 }
 
-const RESOLUTION_STEP_MS = 600;
-const BOARD_ANIM_MS = 280;
+/** Pausa tra una mezza mossa e la successiva durante la risoluzione (bianco → nero per slot). */
+const RESOLUTION_STEP_MS = 1000;
+/** Durata slide dei pezzi tra due FEN; sotto il passo sopra così la posizione si “assesta”. */
+const BOARD_ANIM_MS = 480;
 
 /**
  * Colyseus ArraySchema: prefer index iteration — `toArray()` can lag behind in-place
