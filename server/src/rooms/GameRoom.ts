@@ -3,6 +3,7 @@ import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } f
 import { Chess } from "chess.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
+import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
 import { releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
@@ -452,6 +453,7 @@ export class GameRoom extends Room<PredictChessState> {
         round.fenAfter = fen;
         this.state.resolvedRounds.push(round);
         this.state.historyLog.push(formatRoundHistoryLine(round));
+        this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
         this.endGame(step.winner, "king");
         return;
       }
@@ -461,6 +463,7 @@ export class GameRoom extends Room<PredictChessState> {
     round.fenAfter = fen;
     this.state.resolvedRounds.push(round);
     this.state.historyLog.push(formatRoundHistoryLine(round));
+    this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
     this.state.roundIndex++;
 
     if (this.state.roundIndex >= MAX_ROUNDS) {
