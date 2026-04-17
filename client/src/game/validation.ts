@@ -79,6 +79,17 @@ export function isInCheckForSide(fen: string, color: Color): boolean {
   return c.isCheck();
 }
 
+/** Square of `color`'s king in `fen` (piece placement only; ignores side to move). */
+export function getKingSquareOf(fen: string, color: Color): Square | null {
+  const c = new Chess();
+  c.load(fen.trim());
+  for (const sq of ALL_SQUARES) {
+    const p = c.get(sq);
+    if (p && p.type === "k" && p.color === color) return sq;
+  }
+  return null;
+}
+
 /** Legal destination squares for planning (includes anticipated capture of own piece). */
 export function getLegalTargetsForPlanning(
   fen: string,

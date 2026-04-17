@@ -23,6 +23,7 @@ import type {
 import {
   forkForSide,
   findVerboseMoveTo,
+  getKingSquareOf,
   getLegalTargetsForPlanning,
   isInCheckForSide,
   isMoveLegalForSide,
@@ -646,6 +647,21 @@ export function GamePage() {
         backgroundSize: "100% 100%",
       };
     }
+    const fenForCheck = effectiveBoardFen;
+    if (fenForCheck?.trim()) {
+      const ring = "inset 0 0 0 3px rgba(220, 50, 50, 0.92)";
+      for (const color of ["w", "b"] as const) {
+        if (!isInCheckForSide(fenForCheck, color)) continue;
+        const sq = getKingSquareOf(fenForCheck, color);
+        if (!sq) continue;
+        const prev = st[sq];
+        st[sq] = {
+          ...prev,
+          boxShadow: prev?.boxShadow ? `${prev.boxShadow}, ${ring}` : ring,
+          backgroundColor: prev?.backgroundColor ?? "rgba(255, 65, 65, 0.32)",
+        };
+      }
+    }
     return st;
   }, [
     pickFrom,
@@ -656,6 +672,7 @@ export function GamePage() {
     failedSquare,
     pendingMoveSquares,
     isAnimating,
+    effectiveBoardFen,
   ]);
 
   const goHistoryBack = useCallback(() => {
