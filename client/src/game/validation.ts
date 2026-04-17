@@ -136,3 +136,29 @@ export function findVerboseMoveTo(
   }
   return found ? { to: toN, promotion: found.promotion, san: found.san } : null;
 }
+
+/** Applica una mossa di pianificazione sul FEN (rimuove il pezzo amico sul `to` se serve), come sul server. */
+export function applyPlanningMove(
+  fen: string,
+  from: Square,
+  to: Square,
+  color: Color
+): string | null {
+  const toN = normalizeCastleTarget(fen, from, to, color);
+  const c = forkForSide(fen, color);
+  const piece = c.get(from);
+  if (!piece || piece.color !== color) return null;
+  const moves = c.moves({ square: from, verbose: true });
+  let found = moves.find((m) => m.to === toN);
+  if (!found) {
+    const target = c.get(toN);
+    if (target && target.color === color) {
+      c.remove(toN);
+      found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+    }
+  }
+  if (!found) return null;
+  const result = c.move({ from, to: toN, promotion: found.promotion });
+  if (!result) return null;
+  return c.fen();
+}

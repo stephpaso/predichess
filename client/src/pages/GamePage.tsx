@@ -21,13 +21,12 @@ import type {
   StepSnapshot,
 } from "../schema/PredictChessState";
 import {
+  applyPlanningMove,
   forkForSide,
-  findVerboseMoveTo,
   getKingSquareOf,
   getLegalTargetsForPlanning,
   isInCheckForSide,
   isMoveLegalForSide,
-  withFenTurn,
 } from "../game/validation";
 
 type Planned = { from: Square; to: Square };
@@ -510,13 +509,9 @@ export function GamePage() {
     let fen = baseFen;
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
-      const found = findVerboseMoveTo(fen, m.from, m.to, color);
-      if (!found) break;
-      const step = new Chess();
-      step.load(withFenTurn(fen, color));
-      const res = step.move({ from: m.from, to: found.to, promotion: found.promotion });
-      if (!res) break;
-      fen = step.fen();
+      const next = applyPlanningMove(fen, m.from, m.to, color);
+      if (!next) break;
+      fen = next;
     }
     return fen;
   }
@@ -743,7 +738,10 @@ export function GamePage() {
     }
     const baseFen = fenBeforeSlot(serverFen, plan, myColor, activeSlot);
     const legal = isMoveLegalForSide(baseFen, sourceSquare, targetSquare, myColor);
-    if (!legal) return false;
+    if (!legal) {
+      setToast("Mossa illegale");
+      return false;
+    }
 
     setPlan((prev) => {
       const next = prev.map((p) => ({ ...p }));
