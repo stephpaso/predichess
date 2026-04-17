@@ -10,7 +10,7 @@ import {
   joinPredictRoomByResolvedId,
   releasePredictRoom,
 } from "../lib/colyseus";
-import type { PredictChessState } from "../schema/PredictChessState";
+import type { PredictChessState, RoundSnapshot, StepSnapshot } from "../schema/PredictChessState";
 import {
   forkForSide,
   findVerboseMoveTo,
@@ -43,6 +43,38 @@ function planFromState(
 const RESOLUTION_STEP_MS = 600;
 const BOARD_ANIM_MS = 280;
 
+/**
+ * Colyseus ArraySchema: prefer index iteration — `toArray()` can lag behind in-place
+ * mutations, so nested history (resolvedRounds / steps) looked empty in the UI.
+ */
+function readArraySchema<T>(arr: unknown): T[] {
+  if (arr == null) return [];
+  const a = arr as {
+    toArray?: () => T[];
+    length?: number;
+    at?: (i: number) => T;
+    get?: (i: number) => T;
+  };
+  const len = typeof a.length === "number" ? a.length : 0;
+  if (len > 0) {
+    const out: T[] = [];
+    for (let i = 0; i < len; i++) {
+      const el = a.at?.(i) ?? a.get?.(i);
+      if (el !== undefined) out.push(el as T);
+    }
+    if (out.length > 0) return out;
+  }
+  if (typeof a.toArray === "function") {
+    try {
+      const t = a.toArray();
+      if (Array.isArray(t)) return t;
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 export function GamePage() {
   const { roomId = "" } = useParams();
   const [search] = useSearchParams();
@@ -67,6 +99,8 @@ export function GamePage() {
   const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
+  /** Bumps on every Colyseus state patch so React re-reads nested ArraySchemas (history). */
+  const [stateSyncVersion, setStateSyncVersion] = useState(0);
   const prevPhaseRef = useRef<string>("lobby");
   const prevRoundRef = useRef<number>(0);
   const draftTimer = useRef<number | null>(null);
@@ -207,6 +241,7 @@ export function GamePage() {
         applyState(r.state, r.sessionId);
         r.onStateChange((state) => {
           applyState(state, r.sessionId);
+          setStateSyncVersion((v) => v + 1);
         });
         r.onMessage("status", (m) => applyStatus(m, r.sessionId));
         r.send("status_req");
@@ -353,18 +388,27 @@ export function GamePage() {
     };
   }, [plan, room, canEditPlan, myColor]);
 
-  // Compute on each render; resolvedRounds is small and this avoids ArraySchema-in-place update edge cases.
-  const historyFens = (() => {
-    const rounds = room?.state?.resolvedRounds?.toArray?.() ?? [];
+  const historyFens = useMemo(() => {
+    const rounds = readArraySchema<RoundSnapshot>(room?.state?.resolvedRounds);
     const out: string[] = [];
     for (const r of rounds) {
-      const steps = r.steps?.toArray?.() ?? [];
+      const steps = readArraySchema<StepSnapshot>(r.steps);
       for (const s of steps) {
         if (s?.fenAfter) out.push(s.fenAfter);
       }
     }
     return out;
-  })();
+  }, [room, stateSyncVersion]);
+
+  const resolvedRoundsList = useMemo(
+    () => readArraySchema<RoundSnapshot>(room?.state?.resolvedRounds),
+    [room, stateSyncVersion]
+  );
+
+  const historyLogList = useMemo(
+    () => readArraySchema<string>(room?.state?.historyLog),
+    [room, stateSyncVersion]
+  );
 
   const viewingHistory =
     historyCursor != null && historyCursor >= 0 && historyCursor < historyFens.length;
@@ -740,8 +784,8 @@ export function GamePage() {
 
         <div className="w-full lg:w-80">
           <RoundHistoryPanel
-            rounds={room?.state?.resolvedRounds?.toArray?.() ?? []}
-            historyLines={room?.state?.historyLog?.toArray?.() ?? []}
+            rounds={resolvedRoundsList}
+            historyLines={historyLogList}
             cursor={historyCursor}
             totalFens={historyFens.length}
             onBack={goHistoryBack}
@@ -896,8 +940,7 @@ function RoundHistoryPanel({
           <p className="text-xs text-slate-500">Nessuna risoluzione ancora.</p>
         )}
         {rounds.map((r, ri) => {
-          const steps =
-            (Array.isArray(r.steps) ? r.steps : r.steps?.toArray?.()) ?? [];
+          const steps = readArraySchema<StepSnapshot>(r.steps);
           const movesText = steps
             .map((s, i) => {
               const w = s.whiteMove

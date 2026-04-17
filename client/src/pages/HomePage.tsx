@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { RulesModal } from "../components/RulesModal";
 import { apiBase } from "../lib/colyseus";
 
 type Props = {
@@ -19,6 +20,7 @@ export function HomePage({ onBot }: Props) {
   }, [params]);
 
   const [howOpen, setHowOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [stats, setStats] = useState<{ activeRooms: number; connectedUsers: number } | null>(null);
 
   useEffect(() => {
@@ -132,6 +134,14 @@ export function HomePage({ onBot }: Props) {
         >
           Come si gioca
         </button>
+
+        <button
+          type="button"
+          onClick={() => setRulesOpen(true)}
+          className="rounded-2xl border border-white/10 bg-slate-950 px-4 py-4 text-center text-sm font-medium text-slate-200 transition hover:bg-slate-900 active:scale-[0.99]"
+        >
+          Regole
+        </button>
       </div>
 
       {howOpen && (
@@ -184,6 +194,8 @@ export function HomePage({ onBot }: Props) {
           </div>
         </div>
       )}
+
+      <RulesModal open={rulesOpen} onClose={() => setRulesOpen(false)} />
     </div>
   );
 }
