@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square, type Color } from "chess.js";
-import type { Room } from "colyseus.js";
 import {
+  type PredictRoom,
   consumePredictReservationForCode,
   formatJoinError,
   joinPredictRoom,
@@ -129,7 +129,7 @@ function writeLastAnimatedRoundIndex(roomCode: string, n: number): void {
 export function GamePage() {
   const { roomId = "" } = useParams();
   const [error, setError] = useState<string | null>(null);
-  const [room, setRoom] = useState<Room<PredictChessState> | null>(null);
+  const [room, setRoom] = useState<PredictRoom | null>(null);
   const [phase, setPhase] = useState<string>("lobby");
   const [serverFen, setServerFen] = useState(() => new Chess().fen());
   const [timerMs, setTimerMs] = useState(0);
@@ -152,7 +152,7 @@ export function GamePage() {
   } | null>(null);
   const resolutionAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastValidFenRef = useRef<string>(new Chess().fen());
-  const roomRef = useRef<Room<PredictChessState> | null>(null);
+  const roomRef = useRef<PredictRoom | null>(null);
   const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
@@ -173,9 +173,9 @@ export function GamePage() {
       const code = p.toUpperCase().replace(/[^A-Z0-9]/g, "");
       return code.length >= 1 ? code : "";
     }
-    const sid = room?.id?.trim();
+    const sid = room?.roomId?.trim();
     return sid ? `rid:${sid}` : "";
-  }, [roomId, room?.id]);
+  }, [roomId, room?.roomId]);
 
   roomCodeRef.current = playbackRoomKey;
 
@@ -308,7 +308,7 @@ export function GamePage() {
   );
 
   useEffect(() => {
-    let joined: Room<PredictChessState> | null = null;
+    let joined: PredictRoom | null = null;
     let cancelled = false;
 
     (async () => {

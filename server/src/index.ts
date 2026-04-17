@@ -4,8 +4,8 @@ import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import "colyseus";
 import { Server, matchMaker } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
 import { GameRoom } from "./rooms/GameRoom.js";
 import { BotRoom } from "./rooms/BotRoom.js";
 import { generateRoomCode, registerRoomCode, releaseRoomCode, resolveRoomCode } from "./registry.js";
@@ -23,6 +23,27 @@ app.get("/health", (_req, res) => {
 
 app.get("/stats", (_req, res) => {
   res.json({ ok: true, ...getLiveStats() });
+});
+
+/** Public lobby listing (replaces legacy `client.getAvailableRooms` removed from @colyseus/sdk 0.17). */
+app.get("/match/available", async (_req, res) => {
+  try {
+    const rooms = await matchMaker.query({
+      name: "predict_chess",
+      private: false,
+    });
+    res.json(
+      rooms.map((r) => ({
+        roomId: r.roomId,
+        clients: r.clients ?? 0,
+        maxClients: r.maxClients ?? 2,
+        metadata: r.metadata,
+      }))
+    );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "query_failed" });
+  }
 });
 
 // Serve the Vite SPA (client/dist) from the same service in production.
@@ -64,9 +85,9 @@ app.post("/match/create", async (req, res) => {
       isPublic,
       mode,
     });
-    registerRoomCode(roomCode, reservation.room.roomId);
+    registerRoomCode(roomCode, reservation.roomId);
     res.json({
-      roomId: reservation.room.roomId,
+      roomId: reservation.roomId,
       roomCode,
       // Send through as-is; client will consume it.
       reservation,
@@ -102,9 +123,9 @@ app.post("/bot/create", async (req, res) => {
       turnTimeSec,
       mode,
     });
-    registerRoomCode(roomCode, reservation.room.roomId);
+    registerRoomCode(roomCode, reservation.roomId);
     res.json({
-      roomId: reservation.room.roomId,
+      roomId: reservation.roomId,
       roomCode,
       reservation,
     });
@@ -137,7 +158,9 @@ app.get("*", (_req, res) => {
 
 const httpServer = createServer(app);
 const gameServer = new Server({
-  server: httpServer,
+  transport: new WebSocketTransport({
+    server: httpServer,
+  }),
 });
 
 gameServer.define("predict_chess", GameRoom);

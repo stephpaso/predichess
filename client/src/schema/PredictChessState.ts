@@ -1,4 +1,4 @@
-import { Schema, type, MapSchema, ArraySchema, filter } from "@colyseus/schema";
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
 export class Player extends Schema {
   @type("string") sessionId: string = "";
@@ -49,17 +49,9 @@ export class PredictChessState extends Schema {
   @type("string") winner: string = "";
   @type("string") gameOverReason: string = "";
 
-  @filter(function (this: PredictChessState, client: { sessionId: string }) {
-    const me = this.players.get(client.sessionId);
-    return me?.color === "white";
-  })
   @type([PlannedMove])
   whiteMoves = new ArraySchema<PlannedMove>();
 
-  @filter(function (this: PredictChessState, client: { sessionId: string }) {
-    const me = this.players.get(client.sessionId);
-    return me?.color === "black";
-  })
   @type([PlannedMove])
   blackMoves = new ArraySchema<PlannedMove>();
 

@@ -1,4 +1,4 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
@@ -12,7 +12,7 @@ const TICK_MS = 100;
 const MAX_ROUNDS = 40;
 const IDLE_DISPOSE_MS = 3 * 60_000;
 
-export class GameRoom extends Room<PredictChessState> {
+export class GameRoom extends Room<{ state: PredictChessState }> {
   maxClients = 2;
   private roomCode: string = "";
   private planMs = 20_000;
@@ -53,7 +53,7 @@ export class GameRoom extends Room<PredictChessState> {
     this.broadcast("status", this.buildStatus());
   }
 
-  onCreate(
+  async onCreate(
     options: {
       roomCode?: string;
       hostColorPref?: "white" | "black" | "random";
@@ -103,8 +103,8 @@ export class GameRoom extends Room<PredictChessState> {
 
     onRoomCreated();
     // Only public rooms should be listed by getAvailableRooms().
-    this.setPrivate(!this.isPublic);
-    this.setMetadata({
+    await this.setPrivate(!this.isPublic);
+    await this.setMetadata({
       isPublic: this.isPublic,
       started: false,
       turnTimeSec,
@@ -166,11 +166,12 @@ export class GameRoom extends Room<PredictChessState> {
 
     if (this.clients.length === 2) {
       console.log(`[GameRoom] beginMatch roomId=${this.roomId} code=${this.roomCode}`);
-      this.beginMatch();
+      void this.beginMatch();
     }
   }
 
-  async onLeave(client: Client, consented: boolean) {
+  async onLeave(client: Client, code: number) {
+    const consented = code === CloseCode.CONSENTED;
     console.log(
       `[GameRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId} clients=${this.clients.length}`
     );
@@ -223,7 +224,7 @@ export class GameRoom extends Room<PredictChessState> {
     onRoomDisposed();
   }
 
-  private beginMatch() {
+  private async beginMatch() {
     this.state.fen =
       this.gameMode === "shuffle" ? pickRandomMidgameFen() : new Chess().fen();
     this.state.winner = "";
@@ -232,8 +233,8 @@ export class GameRoom extends Room<PredictChessState> {
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
     // Hide rooms once started; the Join list should only show pre-game lobbies.
-    this.setPrivate(true);
-    this.setMetadata({
+    await this.setPrivate(true);
+    await this.setMetadata({
       ...(this.metadata ?? {}),
       started: true,
     });

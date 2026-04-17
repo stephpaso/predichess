@@ -1,4 +1,4 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
 import { Chess } from "chess.js";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
 import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
@@ -22,7 +22,7 @@ function withFenTurn(fen: string, turn: "w" | "b"): string {
   return parts.join(" ");
 }
 
-export class BotRoom extends Room<PredictChessState> {
+export class BotRoom extends Room<{ state: PredictChessState }> {
   maxClients = 1;
   private roomCode: string = "";
   private planMs = 20_000;
@@ -73,7 +73,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.broadcast("status", this.buildStatus());
   }
 
-  onCreate(
+  async onCreate(
     options: {
       roomCode?: string;
       color?: "white" | "black" | "random";
@@ -122,8 +122,8 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.gameMode = this.gameMode;
 
     onRoomCreated();
-    this.setPrivate(true);
-    this.setMetadata({
+    await this.setPrivate(true);
+    await this.setMetadata({
       isBot: true,
       started: true,
       predictiveSlots: this.predictiveSlots,
@@ -177,10 +177,11 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.players.set(BOT_SESSION_ID, bot);
 
     onUserConnected();
-    this.beginMatch();
+    void this.beginMatch();
   }
 
-  async onLeave(client: Client, consented: boolean) {
+  async onLeave(client: Client, code: number) {
+    const consented = code === CloseCode.CONSENTED;
     console.log(`[BotRoom] leave roomId=${this.roomId} code=${this.roomCode} session=${client.sessionId}`);
     if (client.sessionId === BOT_SESSION_ID) {
       return;
@@ -231,7 +232,7 @@ export class BotRoom extends Room<PredictChessState> {
     onRoomDisposed();
   }
 
-  private beginMatch() {
+  private async beginMatch() {
     this.state.fen =
       this.gameMode === "shuffle" ? pickRandomMidgameFen() : new Chess().fen();
     this.state.winner = "";
