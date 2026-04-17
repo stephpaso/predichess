@@ -6,10 +6,13 @@ export type PlannedMoveInput = { from: string; to: string };
 
 function withFenTurn(fen: string, color: Color): string {
   // FEN: "board activeColor castling ep halfmove fullmove"
-  // We only need move generation for a given side; don't use chess.js null-move based turn flips.
+  // Align side to move for chess.js; if we flip turn, clear ep — it only applies to the
+  // original active color (chess.js: "illegal en-passant square" otherwise).
   const parts = fen.trim().split(/\s+/);
   if (parts.length < 2) return fen;
+  if (parts[1] === color) return fen;
   parts[1] = color;
+  if (parts.length > 3) parts[3] = "-";
   return parts.join(" ");
 }
 
@@ -235,4 +238,44 @@ export function padMovesN(moves: PlannedMoveInput[], slots: number): PlannedMove
   const out = moves.slice(0, n);
   while (out.length < n) out.push({ ...EMPTY });
   return out;
+}
+
+/** True if `color`'s king is in check in `fen` (ignores whose turn it is in the FEN). */
+export function isSideInCheck(fen: string, color: Color): boolean {
+  return forkForSide(fen, color).inCheck();
+}
+
+/**
+ * If the side to move starts in check, simulates only that side's planned moves in isolation.
+ * Returns the losing player ("white" | "black") if they never get out of check in that sequence
+ * (including empty or all-pass plans); otherwise null.
+ */
+export function loserForIgnoredCheckIfAny(
+  fen: string,
+  whiteMoves: PlannedMoveInput[],
+  blackMoves: PlannedMoveInput[]
+): "white" | "black" | null {
+  const c = new Chess();
+  c.load(fen);
+  if (!c.inCheck()) return null;
+
+  const turn = c.turn();
+  const color: Color = turn;
+  const seq = turn === "w" ? whiteMoves : blackMoves;
+
+  let currentFen = fen;
+  for (const m of seq) {
+    if (isPass(m)) continue;
+    const from = normalizeSquare(m.from);
+    const to = normalizeSquare(m.to);
+    if (!from || !to) continue;
+    const next = applySanMove(currentFen, from, to, color);
+    if (!next) continue;
+    currentFen = next.fen;
+    if (!isSideInCheck(currentFen, color)) {
+      return null;
+    }
+  }
+
+  return isSideInCheck(currentFen, color) ? (turn === "w" ? "white" : "black") : null;
 }

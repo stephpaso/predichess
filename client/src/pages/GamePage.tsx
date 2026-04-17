@@ -85,6 +85,7 @@ export function GamePage() {
   const [timerMs, setTimerMs] = useState(0);
   const [myColor, setMyColor] = useState<Color | null>(null);
   const [winner, setWinner] = useState("");
+  const [gameOverReason, setGameOverReason] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
   const [slotCount, setSlotCount] = useState(3);
@@ -124,6 +125,7 @@ export function GamePage() {
     }
     setTimerMs(s.timerMs ?? 0);
     setWinner(s.winner ?? "");
+    setGameOverReason(s.gameOverReason ?? "");
     setRoundIndex(nextRound);
     const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
     setSlotCount(slots);
@@ -167,6 +169,7 @@ export function GamePage() {
         timerMs?: number;
         roundIndex?: number;
         winner?: string;
+        gameOverReason?: string;
         whiteLocked?: boolean;
         blackLocked?: boolean;
         players?: Array<{ sessionId: string; color: string; connected: boolean }>;
@@ -190,6 +193,7 @@ export function GamePage() {
       }
       setTimerMs(msg.timerMs ?? 0);
       setWinner(msg.winner ?? "");
+      setGameOverReason(msg.gameOverReason ?? "");
       setRoundIndex(nextRound);
       const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
       setSlotCount(slots);
@@ -716,16 +720,21 @@ export function GamePage() {
       )}
 
       {phase === "finished" && winner && (
-        <p className="mb-4 text-center text-lg text-white">
-          Fine partita:{" "}
-          <span className="text-indigo-300">
-            {winner === "draw"
-              ? "Patta"
-              : winner === "white"
-                ? "Vince il Bianco"
-                : "Vince il Nero"}
-          </span>
-        </p>
+        <div className="mb-4 text-center">
+          <p className="text-lg text-white">
+            Fine partita:{" "}
+            <span className="text-indigo-300">
+              {winner === "draw"
+                ? "Patta"
+                : winner === "white"
+                  ? "Vince il Bianco"
+                  : "Vince il Nero"}
+            </span>
+          </p>
+          {gameOverReason ? (
+            <p className="mt-2 text-sm text-slate-400">{gameOverReason}</p>
+          ) : null}
+        </div>
       )}
 
       {phase !== "lobby" && phase !== "finished" && (

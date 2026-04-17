@@ -13,7 +13,11 @@ const ALL_SQUARES: Square[] = (() => {
 export function withFenTurn(fen: string, color: Color): string {
   const parts = fen.trim().split(/\s+/);
   if (parts.length < 2) return fen;
+  if (parts[1] === color) return fen;
   parts[1] = color;
+  // En-passant is only valid for the original side to move; flipping turn leaves a
+  // FEN chess.js rejects ("illegal en-passant square").
+  if (parts.length > 3) parts[3] = "-";
   return parts.join(" ");
 }
 

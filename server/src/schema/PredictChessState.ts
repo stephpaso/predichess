@@ -47,6 +47,8 @@ export class PredictChessState extends Schema {
   @type({ map: Player }) players = new MapSchema<Player>();
 
   @type("string") winner: string = "";
+  /** Human-readable end reason (e.g. anti-stall check rule). */
+  @type("string") gameOverReason: string = "";
 
   @filter(function (this: PredictChessState, client: { sessionId: string }) {
     const me = this.players.get(client.sessionId);

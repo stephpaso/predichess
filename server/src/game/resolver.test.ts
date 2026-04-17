@@ -1,5 +1,12 @@
 import { Chess } from "chess.js";
-import { padMoves, padMovesN, resolveOneStep, type PlannedMoveInput } from "./resolver.js";
+import {
+  isSideInCheck,
+  loserForIgnoredCheckIfAny,
+  padMoves,
+  padMovesN,
+  resolveOneStep,
+  type PlannedMoveInput,
+} from "./resolver.js";
 
 function applySteps(fenBefore: string, white: PlannedMoveInput[], black: PlannedMoveInput[]) {
   let fen = fenBefore;
@@ -114,6 +121,57 @@ function run() {
     if (!res.fenAfterWhite || res.fenAfterWhite !== res.fenAfter) {
       throw new Error("Expected fenAfterWhite after lone white move");
     }
+  }
+
+  // Case 6: Anti-stall — side to move in check must address check in isolated plan (all pass => lose).
+  {
+    const fenBlackInCheck = "4k3/8/8/8/8/8/4R3/4K3 b - - 0 1";
+    const empty5 = (): PlannedMoveInput[] =>
+      Array.from({ length: 5 }, () => ({ from: "", to: "" }));
+    const lose = loserForIgnoredCheckIfAny(fenBlackInCheck, empty5(), empty5());
+    if (lose !== "black") throw new Error(`Expected black to lose when ignoring check, got ${lose}`);
+  }
+
+  // Case 7: Anti-stall — legal move that escapes check => no loss.
+  {
+    const fenBlackInCheck = "4k3/8/8/8/8/8/4R3/4K3 b - - 0 1";
+    const empty5 = (): PlannedMoveInput[] =>
+      Array.from({ length: 5 }, () => ({ from: "", to: "" }));
+    const bm: PlannedMoveInput[] = [
+      { from: "e8", to: "d8" },
+      ...Array.from({ length: 4 }, () => ({ from: "", to: "" })),
+    ];
+    const ok = loserForIgnoredCheckIfAny(fenBlackInCheck, empty5(), bm);
+    if (ok !== null) throw new Error(`Expected no loser when escaping check, got ${ok}`);
+  }
+
+  // Case 8: Anti-stall — not in check at round start => rule inactive.
+  {
+    const fen = new Chess().fen();
+    const empty5 = (): PlannedMoveInput[] =>
+      Array.from({ length: 5 }, () => ({ from: "", to: "" }));
+    const none = loserForIgnoredCheckIfAny(fen, empty5(), empty5());
+    if (none !== null) throw new Error(`Expected no loser from start position, got ${none}`);
+  }
+
+  // Case 9: Anti-stall — white to move and in check, all pass => white loses.
+  {
+    const fenWhiteInCheck = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1";
+    const empty5 = (): PlannedMoveInput[] =>
+      Array.from({ length: 5 }, () => ({ from: "", to: "" }));
+    const lose = loserForIgnoredCheckIfAny(fenWhiteInCheck, empty5(), empty5());
+    if (lose !== "white") throw new Error(`Expected white to lose when ignoring check, got ${lose}`);
+  }
+
+  // Case 10: After 1.e4, FEN has Black to move and an ep square; checking the other side's
+  // king must not throw (withFenTurn must clear ep when flipping turn).
+  {
+    const c = new Chess();
+    c.move("e4");
+    const fenAfterE4 = c.fen();
+    if (!fenAfterE4.includes(" b ")) throw new Error("Expected black to move after 1.e4");
+    const ok = isSideInCheck(fenAfterE4, "w");
+    if (typeof ok !== "boolean") throw new Error("Expected boolean from isSideInCheck");
   }
 
   console.log("[resolver.test] OK");

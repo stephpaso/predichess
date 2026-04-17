@@ -1,7 +1,7 @@
 import { Room, Client } from "@colyseus/core";
 import { Chess } from "chess.js";
 import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
-import { padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
+import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
@@ -52,6 +52,7 @@ export class BotRoom extends Room<PredictChessState> {
       timerMs: this.state.timerMs,
       roundIndex: this.state.roundIndex,
       winner: this.state.winner,
+      gameOverReason: this.state.gameOverReason,
       whiteLocked: this.state.whiteLocked,
       blackLocked: this.state.blackLocked,
       players: [...this.state.players.values()].map((p) => ({
@@ -101,6 +102,7 @@ export class BotRoom extends Room<PredictChessState> {
     this.state.timerMs = 0;
     this.state.roundIndex = 0;
     this.state.winner = "";
+    this.state.gameOverReason = "";
     this.state.whiteLocked = false;
     this.state.blackLocked = false;
     this.state.lastResolutionSteps.clear();
@@ -190,6 +192,7 @@ export class BotRoom extends Room<PredictChessState> {
   private beginMatch() {
     this.state.fen = new Chess().fen();
     this.state.winner = "";
+    this.state.gameOverReason = "";
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
@@ -358,6 +361,15 @@ export class BotRoom extends Room<PredictChessState> {
   }
 
   private runResolution() {
+    const wm = this.plannedToInput(this.state.whiteMoves);
+    const bm = this.plannedToInput(this.state.blackMoves);
+
+    const ignoredCheckLoser = loserForIgnoredCheckIfAny(this.state.fen, wm, bm);
+    if (ignoredCheckLoser) {
+      this.endGame(ignoredCheckLoser === "white" ? "black" : "white", "ignored_check");
+      return;
+    }
+
     this.state.phase = "resolution";
     this.state.lastResolutionSteps.clear();
     this.broadcastStatus();
@@ -367,8 +379,6 @@ export class BotRoom extends Room<PredictChessState> {
     round.fenBefore = this.state.fen;
 
     let fen = this.state.fen;
-    const wm = this.plannedToInput(this.state.whiteMoves);
-    const bm = this.plannedToInput(this.state.blackMoves);
 
     for (let i = 0; i < this.predictiveSlots; i++) {
       const step = resolveOneStep(fen, wm[i], bm[i]);
@@ -444,12 +454,14 @@ export class BotRoom extends Room<PredictChessState> {
 
   private endGame(
     winner: "white" | "black" | "draw",
-    _reason: "king" | "checkmate" | "draw" | "disconnect" | "max_rounds" | "resign"
+    reason: "king" | "checkmate" | "draw" | "disconnect" | "max_rounds" | "resign" | "ignored_check"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
     this.state.phase = "finished";
     this.state.winner = winner;
+    this.state.gameOverReason =
+      reason === "ignored_check" ? "Sconfitta per mancata uscita dallo scacco" : "";
     this.state.timerMs = 0;
     this.broadcastStatus();
     if (!this.ending) {
