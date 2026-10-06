@@ -25,12 +25,30 @@ const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+/** Resolve Allow-Origin only from the allowlist (never reflect raw Origin / never *). */
+function allowedCorsOrigin(requestOrigin: string | null): string {
+  if (!requestOrigin || corsOrigins.length === 0) return "";
+  const idx = corsOrigins.indexOf(requestOrigin);
+  return idx >= 0 ? corsOrigins[idx]! : "";
+}
+
 app.use(
   cors({
     origin: corsOrigins.length > 0 ? corsOrigins : false,
     methods: ["GET", "POST", "OPTIONS"],
   })
 );
+
+// Colyseus prepends CORS on every HTTP response via matchMaker.controller —
+// default getCorsHeaders reflects any Origin. Override to the same allowlist.
+matchMaker.controller.DEFAULT_CORS_HEADERS = {
+  ...matchMaker.controller.DEFAULT_CORS_HEADERS,
+  "Access-Control-Allow-Origin": "",
+};
+matchMaker.controller.getCorsHeaders = (headers: Headers) => ({
+  "Access-Control-Allow-Origin": allowedCorsOrigin(headers.get("origin")),
+});
 
 app.use(express.json({ limit: "16kb" }));
 
