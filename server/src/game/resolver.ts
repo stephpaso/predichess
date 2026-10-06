@@ -233,9 +233,21 @@ export function padMoves(moves: PlannedMoveInput[]): PlannedMoveInput[] {
   return padMovesN(moves, 5);
 }
 
+/** Max length for a square token before normalize (DoS guard on hostile WS payloads). */
+const MAX_SQUARE_TOKEN_LEN = 8;
+
+function sanitizeMoveToken(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.slice(0, MAX_SQUARE_TOKEN_LEN);
+}
+
 export function padMovesN(moves: PlannedMoveInput[], slots: number): PlannedMoveInput[] {
   const n = Math.max(1, Math.min(5, Math.floor(slots || 0)));
-  const out = moves.slice(0, n);
+  const src = Array.isArray(moves) ? moves : [];
+  const out: PlannedMoveInput[] = src.slice(0, n).map((m) => ({
+    from: sanitizeMoveToken(m?.from),
+    to: sanitizeMoveToken(m?.to),
+  }));
   while (out.length < n) out.push({ ...EMPTY });
   return out;
 }

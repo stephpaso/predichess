@@ -1,3 +1,5 @@
+import { randomInt } from "crypto";
+
 /**
  * Short, room-code-friendly charset (uppercase, no confusing I/O).
  */
@@ -9,7 +11,7 @@ const codeToRoomId = new Map<string, string>();
 export function generateRoomCode(length = 5): string {
   let code = "";
   for (let i = 0; i < length; i++) {
-    code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+    code += CODE_CHARS[randomInt(CODE_CHARS.length)];
   }
   if (activeCodes.has(code)) return generateRoomCode(length);
   activeCodes.add(code);

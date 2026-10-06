@@ -10,12 +10,56 @@ import { GameRoom } from "./rooms/GameRoom.js";
 import { BotRoom } from "./rooms/BotRoom.js";
 import { generateRoomCode, registerRoomCode, releaseRoomCode, resolveRoomCode } from "./registry.js";
 import { getLiveStats } from "./stats.js";
+import { rateLimit } from "./utils/rateLimit.js";
 
 const PORT = Number(process.env.PORT) || 2567;
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+/** Optional comma-separated allowlist; unset = reflect request origin (SPA same-origin ok). */
+const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors(
+    corsOrigins.length > 0
+      ? { origin: corsOrigins, methods: ["GET", "POST", "OPTIONS"] }
+      : { origin: true, methods: ["GET", "POST", "OPTIONS"] }
+  )
+);
+
+app.use(express.json({ limit: "16kb" }));
+
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // API + WS app; CSP left permissive for the SPA assets served from the same origin.
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  next();
+});
+
+function clientIp(req: express.Request): string {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0]!.trim();
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function enforceCreateRateLimit(req: express.Request, res: express.Response): boolean {
+  const { allowed, retryAfterSec } = rateLimit({
+    key: `create:${clientIp(req)}`,
+    limit: 20,
+    windowMs: 60_000,
+  });
+  if (!allowed) {
+    res.setHeader("Retry-After", String(retryAfterSec));
+    res.status(429).json({ error: "rate_limited" });
+    return false;
+  }
+  return true;
+}
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -56,6 +100,8 @@ if (fs.existsSync(clientDistPath)) {
 }
 
 app.post("/match/create", async (req, res) => {
+  if (!enforceCreateRateLimit(req, res)) return;
+
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     hostColorPref?: "white" | "black" | "random";
@@ -100,6 +146,8 @@ app.post("/match/create", async (req, res) => {
 });
 
 app.post("/bot/create", async (req, res) => {
+  if (!enforceCreateRateLimit(req, res)) return;
+
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     botElo?: number;
@@ -137,7 +185,13 @@ app.post("/bot/create", async (req, res) => {
 });
 
 app.get("/match/resolve/:code", (req, res) => {
-  const code = String(req.params.code ?? "").toUpperCase();
+  const raw = String(req.params.code ?? "");
+  // Only accept short room codes from our alphabet (prevents oversized / odd lookups).
+  if (!/^[A-Za-z0-9]{1,16}$/.test(raw)) {
+    res.status(400).json({ error: "invalid_code" });
+    return;
+  }
+  const code = raw.toUpperCase();
   const roomId = resolveRoomCode(code);
   if (!roomId) {
     res.status(404).json({ error: "not_found" });
@@ -167,5 +221,5 @@ gameServer.define("predict_chess", GameRoom);
 gameServer.define("bot_chess", BotRoom);
 
 gameServer.listen(PORT).then(() => {
-  console.log(`Predict Chess server listening on http://localhost:${PORT}`);
+  console.log(`Predict Chess server listening on http://0.0.0.0:${PORT}`);
 });
