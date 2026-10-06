@@ -16,8 +16,9 @@
     "@colyseus/schema": "^4.0.8",
     "@colyseus/ws-transport": "^0.17.9",
     "chess.js": "^1.4.0",
+    "cors": "^2.8.5",
     "express": "^4.22.1",
-    "cors": "^2.8.5"
+    "express-rate-limit": "^8.7.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -10,26 +11,47 @@ import { GameRoom } from "./rooms/GameRoom.js";
 import { BotRoom } from "./rooms/BotRoom.js";
 import { generateRoomCode, registerRoomCode, releaseRoomCode, resolveRoomCode } from "./registry.js";
 import { getLiveStats } from "./stats.js";
-import { rateLimit } from "./utils/rateLimit.js";
 
 const PORT = Number(process.env.PORT) || 2567;
 
 const app = express();
 
-/** Optional comma-separated allowlist; unset = reflect request origin (SPA same-origin ok). */
+/**
+ * CORS: explicit allowlist from CORS_ORIGIN (comma-separated).
+ * When unset, disable cross-origin CORS (same-origin SPA on this service).
+ * Never use origin:true / wildcard reflection — CodeQL js/cors-permissive-configuration.
+ */
 const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 app.use(
-  cors(
-    corsOrigins.length > 0
-      ? { origin: corsOrigins, methods: ["GET", "POST", "OPTIONS"] }
-      : { origin: true, methods: ["GET", "POST", "OPTIONS"] }
-  )
+  cors({
+    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    methods: ["GET", "POST", "OPTIONS"],
+  })
 );
 
 app.use(express.json({ limit: "16kb" }));
+
+/** Global limiter — covers FS access (sendFile / static) for CodeQL js/missing-rate-limiting. */
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "rate_limited" },
+});
+app.use(globalLimiter);
+
+/** Tighter limit on room-creation endpoints (resource-intensive matchMaker.create). */
+const createLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "rate_limited" },
+});
 
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -40,26 +62,6 @@ app.use((_req, res, next) => {
   res.setHeader("Cross-Origin-Resource-Policy", "same-site");
   next();
 });
-
-function clientIp(req: express.Request): string {
-  const xf = req.headers["x-forwarded-for"];
-  if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0]!.trim();
-  return req.socket.remoteAddress ?? "unknown";
-}
-
-function enforceCreateRateLimit(req: express.Request, res: express.Response): boolean {
-  const { allowed, retryAfterSec } = rateLimit({
-    key: `create:${clientIp(req)}`,
-    limit: 20,
-    windowMs: 60_000,
-  });
-  if (!allowed) {
-    res.setHeader("Retry-After", String(retryAfterSec));
-    res.status(429).json({ error: "rate_limited" });
-    return false;
-  }
-  return true;
-}
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -99,9 +101,7 @@ if (fs.existsSync(clientDistPath)) {
   app.use(express.static(clientDistPath));
 }
 
-app.post("/match/create", async (req, res) => {
-  if (!enforceCreateRateLimit(req, res)) return;
-
+app.post("/match/create", createLimiter, async (req, res) => {
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     hostColorPref?: "white" | "black" | "random";
@@ -145,9 +145,7 @@ app.post("/match/create", async (req, res) => {
   }
 });
 
-app.post("/bot/create", async (req, res) => {
-  if (!enforceCreateRateLimit(req, res)) return;
-
+app.post("/bot/create", createLimiter, async (req, res) => {
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     botElo?: number;
@@ -200,7 +198,7 @@ app.get("/match/resolve/:code", (req, res) => {
   res.json({ roomId });
 });
 
-// SPA fallback (must be after API routes)
+// SPA fallback (must be after API routes) — sendFile is FS access; covered by globalLimiter.
 app.get("*", (_req, res) => {
   const indexPath = path.join(clientDistPath, "index.html");
   if (!fs.existsSync(indexPath)) {
