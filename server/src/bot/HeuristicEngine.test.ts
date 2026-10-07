@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import { HeuristicEngine } from "./HeuristicEngine.js";
+import { chooseInitiativeBid, HeuristicEngine } from "./HeuristicEngine.js";
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -64,6 +64,25 @@ applyUciSequence(startFen, seq400);
 const first400 = seq400[0] ?? "";
 if (first400.startsWith("e2e4") || first400.startsWith("d2d4")) {
   throw new Error(`expected elo400 (forced blunder) first move to be suboptimal, got: ${first400}`);
+}
+
+const kingFen = "4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1";
+const cap = chooseInitiativeBid(kingFen, ["e2e3", "e3e8"], 3);
+if (!cap || cap.slot !== 1 || cap.amount !== 1) {
+  throw new Error(`expected bid 1 on the capture slot, got ${JSON.stringify(cap)}`);
+}
+const atCap = chooseInitiativeBid(kingFen, ["e2e8"], 4);
+if (!atCap || atCap.slot !== 0 || atCap.amount !== 2) {
+  throw new Error(`expected cap bid of 2, got ${JSON.stringify(atCap)}`);
+}
+const quiet = chooseInitiativeBid(new Chess().fen(), ["e2e4", "d2d4"], 3);
+if (quiet !== null) throw new Error(`expected no bid on quiet moves, got ${JSON.stringify(quiet)}`);
+const escape = chooseInitiativeBid("4k3/8/8/8/8/8/4R3/4K3 b - - 0 1", ["e8d8"], 3);
+if (!escape || escape.slot !== 0 || escape.amount !== 1) {
+  throw new Error(`expected escape bid, got ${JSON.stringify(escape)}`);
+}
+if (chooseInitiativeBid(kingFen, ["e2e8"], 0) !== null) {
+  throw new Error("zero tokens must not bid");
 }
 
 console.log("[HeuristicEngine] OK");
