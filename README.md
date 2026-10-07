@@ -24,7 +24,7 @@ Le regole si basano sugli scacchi classici, ma con un twist fondamentale:
 
 1. **Fase di Pianificazione:** Entrambi i giocatori hanno un tempo limitato (default 20s) per programmare una sequenza di mosse (es. 3 o 5 mosse). Durante questa fase, vedi sulla scacchiera l'anteprima dei tuoi movimenti futuri.
 2. **Fase di Risoluzione:** Una volta confermate le sequenze (o allo scadere del tempo), il gioco esegue le mosse automaticamente.
-3. **Priorità e Validità:** Le mosse vengono eseguite una alla volta, partendo dal **Bianco**.
+3. **Priorità e Validità:** In ogni step un giocatore muove per primo (Gettoni Iniziativa, oppure alternanza `(round + step) % 2`). L'altro muove sulla scacchiera già aggiornata.
   - Se l'avversario occupa una casella o blocca una traiettoria durante il suo micro-turno, la tua mossa programmata potrebbe diventare **illegale**.
     - In caso di mossa illegale, il pezzo rimane fermo e lo slot viene saltato.
 4. **Vittoria:** Cattura il Re avversario o portalo allo scacco matto durante la risoluzione.

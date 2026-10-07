@@ -1,4 +1,5 @@
 import { Chess } from "chess.js";
+import { kingCaptureWinner, countKings } from "./kings.js";
 import {
   isSideInCheck,
   loserForIgnoredCheckIfAny,
@@ -7,6 +8,7 @@ import {
   resolveOneStep,
   type PlannedMoveInput,
 } from "./resolver.js";
+import { resolvePlannedRound } from "./roundResolution.js";
 
 function applySteps(fenBefore: string, white: PlannedMoveInput[], black: PlannedMoveInput[]) {
   let fen = fenBefore;
@@ -172,6 +174,174 @@ function run() {
     if (!fenAfterE4.includes(" b ")) throw new Error("Expected black to move after 1.e4");
     const ok = isSideInCheck(fenAfterE4, "w");
     if (typeof ok !== "boolean") throw new Error("Expected boolean from isSideInCheck");
+  }
+
+  // King capture: missing king must not throw. White takes the black king.
+  {
+    const fen = "4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1";
+    const res = resolveOneStep(fen, { from: "e2", to: "e8" }, { from: "", to: "" }, "w");
+    if (res.winner !== "white" || !res.gameOver) {
+      throw new Error(`Expected white to win by king capture, got ${JSON.stringify(res)}`);
+    }
+    const kings = countKings(res.fenAfter);
+    if (kings.b !== 0 || kings.w !== 1) {
+      throw new Error(`Expected only the white king left, got ${JSON.stringify(kings)} fen=${res.fenAfter}`);
+    }
+    if (kingCaptureWinner(res.fenAfter, "w") !== "white") {
+      throw new Error("kingCaptureWinner should report white without throwing");
+    }
+  }
+
+  // Black has priority and captures the white king.
+  {
+    const fen = "4k3/4q3/8/8/8/8/8/4K3 w - - 0 1";
+    const res = resolveOneStep(fen, { from: "", to: "" }, { from: "e7", to: "e1" }, "b");
+    if (res.winner !== "black" || !res.gameOver) {
+      throw new Error(`Expected black to win by king capture, got ${JSON.stringify(res)}`);
+    }
+    if (!res.blackApplied || res.whiteApplied) {
+      throw new Error("Expected only black's capture to apply");
+    }
+  }
+
+  // Both plans would capture a king in the same step: first mover wins, second move is not applied.
+  {
+    const fen = "3Qk3/8/8/8/8/8/8/3qK3 w - - 0 1";
+    const white = { from: "d8", to: "e8" };
+    const black = { from: "d1", to: "e1" };
+    const asWhite = resolveOneStep(fen, white, black, "w");
+    if (asWhite.winner !== "white" || !asWhite.gameOver) {
+      throw new Error(`Both-kings step, white priority: ${JSON.stringify(asWhite)}`);
+    }
+    if (countKings(asWhite.fenAfter).w !== 1 || countKings(asWhite.fenAfter).b !== 0) {
+      throw new Error(`White priority should remove only the black king: ${asWhite.fenAfter}`);
+    }
+    const asBlack = resolveOneStep(fen, white, black, "b");
+    if (asBlack.winner !== "black" || !asBlack.gameOver) {
+      throw new Error(`Both-kings step, black priority: ${JSON.stringify(asBlack)}`);
+    }
+    if (countKings(asBlack.fenAfter).b !== 1 || countKings(asBlack.fenAfter).w !== 0) {
+      throw new Error(`Black priority should remove only the white king: ${asBlack.fenAfter}`);
+    }
+    if (kingCaptureWinner("8/8/8/8/8/8/8/8 w - - 0 1", "b") !== "black") {
+      throw new Error("Both kings already gone: priority side wins, no throw");
+    }
+  }
+
+  // Moving onto your own king is illegal and must not delete it.
+  {
+    const fen = "4k3/8/8/8/8/8/8/R3K3 w - - 0 1";
+    const res = resolveOneStep(fen, { from: "a1", to: "e1" }, { from: "", to: "" }, "w");
+    if (res.whiteApplied) throw new Error("Own-king destination must not apply");
+    if (res.gameOver) throw new Error("Own-king destination must not end the game");
+    expectPieceAt(res.fenAfter, "e1", "wk");
+    expectPieceAt(res.fenAfter, "a1", "wr");
+  }
+
+  // firstMover changes who wins a mutual pawn capture.
+  {
+    const fen = "4k3/8/8/4p3/3P4/8/8/4K3 w - - 0 1";
+    const white = { from: "d4", to: "e5" };
+    const black = { from: "e5", to: "d4" };
+    const wFirst = resolveOneStep(fen, white, black, "w");
+    const bFirst = resolveOneStep(fen, white, black, "b");
+    expectPieceAt(wFirst.fenAfter, "e5", "wp");
+    expectPieceAt(wFirst.fenAfter, "d4", null);
+    expectPieceAt(bFirst.fenAfter, "d4", "bp");
+    expectPieceAt(bFirst.fenAfter, "e5", null);
+    if (wFirst.fenAfter === bFirst.fenAfter) {
+      throw new Error("White-first and black-first must diverge");
+    }
+  }
+
+  // No bids: priority alternates. Equal bids: fewer tokens after spend. Solo bid spends once.
+  {
+    const fen = new Chess().fen();
+    const quiet = resolvePlannedRound({
+      fen,
+      roundIndex: 0,
+      slots: 2,
+      whiteMoves: [
+        { from: "a2", to: "a3" },
+        { from: "b2", to: "b3" },
+      ],
+      blackMoves: [
+        { from: "a7", to: "a6" },
+        { from: "b7", to: "b6" },
+      ],
+      whiteBid: null,
+      blackBid: null,
+      whiteTokens: 3,
+      blackTokens: 3,
+    });
+    if (quiet.steps[0]?.firstMover !== "white" || quiet.steps[1]?.firstMover !== "black") {
+      throw new Error(`Expected alternating priority, got ${quiet.steps.map((s) => s.firstMover).join(",")}`);
+    }
+    if (quiet.whiteTokens !== 3 || quiet.blackTokens !== 3) {
+      throw new Error("No bids must not spend tokens");
+    }
+
+    const round1 = resolvePlannedRound({
+      fen,
+      roundIndex: 1,
+      slots: 1,
+      whiteMoves: [{ from: "a2", to: "a3" }],
+      blackMoves: [{ from: "a7", to: "a6" }],
+      whiteBid: null,
+      blackBid: null,
+      whiteTokens: 4,
+      blackTokens: 4,
+    });
+    if (round1.steps[0]?.firstMover !== "black") {
+      throw new Error("Round 1 step 0 with no bids must be black first");
+    }
+    if (round1.whiteTokens !== 4) throw new Error("Cap must not grow on resolve");
+
+    const tied = resolvePlannedRound({
+      fen,
+      roundIndex: 0,
+      slots: 1,
+      whiteMoves: [{ from: "d2", to: "d4" }],
+      blackMoves: [{ from: "d7", to: "d5" }],
+      whiteBid: { slot: 0, amount: 2 },
+      blackBid: { slot: 0, amount: 2 },
+      whiteTokens: 4,
+      blackTokens: 2,
+    });
+    // After spend: white 2, black 0. Black has fewer → black first.
+    if (tied.steps[0]?.firstMover !== "black") {
+      throw new Error(`Equal bid should favor fewer remaining tokens, got ${tied.steps[0]?.firstMover}`);
+    }
+    if (tied.whiteTokens !== 2 || tied.blackTokens !== 0) {
+      throw new Error(`Expected spend 4→2 and 2→0, got ${tied.whiteTokens}/${tied.blackTokens}`);
+    }
+    if (tied.steps[0]?.whiteBidAmount !== 2 || tied.steps[0]?.blackBidAmount !== 2) {
+      throw new Error("Revealed bids missing");
+    }
+
+    const solo = resolvePlannedRound({
+      fen,
+      roundIndex: 0,
+      slots: 2,
+      whiteMoves: [
+        { from: "a2", to: "a3" },
+        { from: "b2", to: "b3" },
+      ],
+      blackMoves: [
+        { from: "a7", to: "a6" },
+        { from: "b7", to: "b6" },
+      ],
+      whiteBid: { slot: 1, amount: 1 },
+      blackBid: null,
+      whiteTokens: 3,
+      blackTokens: 3,
+    });
+    if (solo.steps[0]?.firstMover !== "white") throw new Error("Uncontested step 0 stays alternating (white)");
+    if (solo.steps[1]?.firstMover !== "white") throw new Error("Solo bid on step 1 must be white first");
+    if (solo.whiteTokens !== 2) throw new Error("Solo bid must spend once");
+    if (solo.steps[0]?.whiteBidAmount !== 0 || solo.steps[1]?.whiteBidAmount !== 1) {
+      throw new Error("Bid amount should be revealed only on the contested slot");
+    }
   }
 
   console.log("[resolver.test] OK");

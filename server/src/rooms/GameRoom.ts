@@ -1,9 +1,18 @@
 import { Room, Client, CloseCode } from "@colyseus/core";
-import { PredictChessState, Player, PlannedMove, StepSnapshot, RoundSnapshot } from "../schema/PredictChessState.js";
+import { PredictChessState, Player, PlannedMove, RoundSnapshot } from "../schema/PredictChessState.js";
 import { Chess } from "chess.js";
-import { loserForIgnoredCheckIfAny, padMovesN, resolveOneStep, type PlannedMoveInput } from "../game/resolver.js";
+import { loserForIgnoredCheckIfAny, padMovesN, safeLoadChess, type PlannedMoveInput } from "../game/resolver.js";
 import { formatRoundHistoryLine } from "../game/roundHistoryLine.js";
 import { serializeRoundResolvedPayload } from "../game/roundResolvedBroadcast.js";
+import { appendResolvedSteps, resolvePlannedRound } from "../game/roundResolution.js";
+import {
+  allowBidRate,
+  parseBidPayload,
+  TOKEN_START,
+  tokensAtPlanningStart,
+  type InitiativeBid,
+} from "../game/initiative.js";
+import { kingCaptureWinner } from "../game/kings.js";
 import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
@@ -34,6 +43,11 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
   private ending = false;
   private pendingReconnections = new Set<string>();
   private consecutiveEmptyPlanRoundsPvp = 0;
+  private whiteBid: InitiativeBid | null = null;
+  private blackBid: InitiativeBid | null = null;
+  private planningRoundsStarted = 0;
+  private resolving = false;
+  private bidHits = new Map<string, number[]>();
 
   private buildStatus() {
     return {
@@ -46,6 +60,8 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
       gameOverReason: this.state.gameOverReason,
       whiteLocked: this.state.whiteLocked,
       blackLocked: this.state.blackLocked,
+      whiteTokens: this.state.whiteTokens,
+      blackTokens: this.state.blackTokens,
       players: [...this.state.players.values()].map((p) => ({
         sessionId: p.sessionId,
         color: p.color,
@@ -119,12 +135,16 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
       gameMode: this.gameMode,
     });
 
-    this.onMessage("submit_plan", (client, message: { moves?: PlannedMoveInput[] }) => {
-      this.handleSubmitPlan(client, message?.moves ?? []);
+    this.onMessage("submit_plan", (client, message: { moves?: PlannedMoveInput[]; bid?: unknown }) => {
+      this.handleSubmitPlan(client, message?.moves ?? [], message);
     });
 
     this.onMessage("draft_plan", (client, message: { moves?: PlannedMoveInput[] }) => {
       this.handleDraftPlan(client, message?.moves ?? []);
+    });
+
+    this.onMessage("set_bid", (client, message: unknown) => {
+      this.handleSetBid(client, message);
     });
 
     this.onMessage("resign", (client) => {
@@ -170,7 +190,10 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     }
     this.broadcastStatus();
 
-    if (this.clients.length === 2) {
+    if (this.state.phase === "planning") this.sendOwnBid(client);
+
+    // Reconnect must not restart the match or reset token balances.
+    if (this.clients.length === 2 && this.state.phase === "lobby") {
       console.log(`[GameRoom] beginMatch roomId=${this.roomId} code=${this.roomCode}`);
       void this.beginMatch();
     }
@@ -251,7 +274,65 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     this.startPlanningPhase();
   }
 
+  private refreshTokensForPlanning() {
+    if (this.planningRoundsStarted === 0) {
+      this.state.whiteTokens = TOKEN_START;
+      this.state.blackTokens = TOKEN_START;
+    } else {
+      this.state.whiteTokens = tokensAtPlanningStart(this.state.whiteTokens);
+      this.state.blackTokens = tokensAtPlanningStart(this.state.blackTokens);
+    }
+    this.planningRoundsStarted += 1;
+    this.whiteBid = null;
+    this.blackBid = null;
+  }
+
+  private sendOwnBid(client: Client) {
+    const player = this.state.players.get(client.sessionId);
+    if (!player || (player.color !== "white" && player.color !== "black")) return;
+    const bid = player.color === "white" ? this.whiteBid : this.blackBid;
+    client.send("my_bid", bid ? { slot: bid.slot, amount: bid.amount } : { slot: -1, amount: 0 });
+  }
+
+  private handleSetBid(client: Client, message: unknown) {
+    if (this.state.phase !== "planning" || this.resolving) return;
+    const player = this.state.players.get(client.sessionId);
+    if (!player || (player.color !== "white" && player.color !== "black")) return;
+    const color = player.color as "white" | "black";
+    if (color === "white" && this.state.whiteLocked) return;
+    if (color === "black" && this.state.blackLocked) return;
+
+    const rate = allowBidRate(this.bidHits.get(client.sessionId) ?? [], Date.now());
+    this.bidHits.set(client.sessionId, rate.hits);
+    if (!rate.ok) return;
+
+    const tokens = color === "white" ? this.state.whiteTokens : this.state.blackTokens;
+    const parsed = parseBidPayload(message, this.predictiveSlots, tokens);
+    if (!parsed.ok) {
+      client.send("bid_rejected", { reason: "invalid" });
+      return;
+    }
+    if (color === "white") this.whiteBid = parsed.bid;
+    else this.blackBid = parsed.bid;
+    this.sendOwnBid(client);
+  }
+
+  private lockBidFromSubmit(client: Client, color: "white" | "black", message: { bid?: unknown }): boolean {
+    if (!message || !Object.prototype.hasOwnProperty.call(message, "bid")) return true;
+    const tokens = color === "white" ? this.state.whiteTokens : this.state.blackTokens;
+    const parsed = parseBidPayload(message.bid, this.predictiveSlots, tokens);
+    if (!parsed.ok) {
+      client.send("bid_rejected", { reason: "invalid" });
+      return false;
+    }
+    if (color === "white") this.whiteBid = parsed.bid;
+    else this.blackBid = parsed.bid;
+    return true;
+  }
+
   private startPlanningPhase() {
+    this.resolving = false;
+    this.refreshTokensForPlanning();
     this.state.phase = "planning";
     this.state.whiteLocked = false;
     this.state.blackLocked = false;
@@ -269,6 +350,7 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = setInterval(() => this.tickPlanning(), TICK_MS);
     this.broadcastStatus();
+    for (const client of this.clients) this.sendOwnBid(client);
   }
 
   private tickPlanning() {
@@ -303,8 +385,8 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     }
   }
 
-  private handleSubmitPlan(client: Client, moves: PlannedMoveInput[]) {
-    if (this.state.phase !== "planning") return;
+  private handleSubmitPlan(client: Client, moves: PlannedMoveInput[], message?: { bid?: unknown }) {
+    if (this.state.phase !== "planning" || this.resolving) return;
 
     const player = this.state.players.get(client.sessionId);
     if (!player || player.color === "spectator") return;
@@ -312,6 +394,8 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     const color = player.color as "white" | "black";
     if (color === "white" && this.state.whiteLocked) return;
     if (color === "black" && this.state.blackLocked) return;
+
+    if (message && !this.lockBidFromSubmit(client, color, message)) return;
 
     const padded = padMovesN(
       moves.map((m) => ({ from: m?.from ?? "", to: m?.to ?? "" })),
@@ -370,6 +454,8 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
   }
 
   private finalizePlanningAndResolve() {
+    if (this.resolving || this.state.phase !== "planning") return;
+    this.resolving = true;
     if (!this.state.whiteLocked) {
       const keep = this.hasAnyPlannedMove(this.state.whiteMoves);
       const src = keep ? this.plannedToInput(this.state.whiteMoves) : padMovesN([], this.predictiveSlots);
@@ -431,64 +517,51 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
 
     this.state.phase = "resolution";
     this.state.lastResolutionSteps.clear();
-    this.broadcastStatus();
 
     const round = new RoundSnapshot();
     round.roundIndex = this.state.roundIndex;
     round.fenBefore = this.state.fen;
+    round.whiteBidSlot = this.whiteBid ? this.whiteBid.slot : -1;
+    round.whiteBidAmount = this.whiteBid?.amount ?? 0;
+    round.blackBidSlot = this.blackBid ? this.blackBid.slot : -1;
+    round.blackBidAmount = this.blackBid?.amount ?? 0;
 
-    let fen = this.state.fen;
-
-    for (let i = 0; i < this.predictiveSlots; i++) {
-      const step = resolveOneStep(fen, wm[i], bm[i]);
-      fen = step.fenAfter;
-
-      const snap = new StepSnapshot();
-      snap.fenAfter = fen;
-      snap.fenAfterWhite = step.fenAfterWhite ?? "";
-      snap.whiteMove = wm[i]?.from && wm[i]?.to ? `${wm[i]!.from}${wm[i]!.to}` : "";
-      snap.blackMove = bm[i]?.from && bm[i]?.to ? `${bm[i]!.from}${bm[i]!.to}` : "";
-      snap.whiteApplied = !!step.whiteApplied;
-      snap.blackApplied = !!step.blackApplied;
-      snap.collision = !!step.collision;
-      snap.captures.clear();
-      for (const c of step.captures ?? []) snap.captures.push(c);
-      this.state.lastResolutionSteps.push(snap);
-
-      // Colyseus Schema children must not be referenced from two parents.
-      // `lastResolutionSteps` drives the current animation; `round.steps` is persisted history.
-      const hist = new StepSnapshot();
-      hist.fenAfter = snap.fenAfter;
-      hist.fenAfterWhite = snap.fenAfterWhite;
-      hist.whiteMove = snap.whiteMove;
-      hist.blackMove = snap.blackMove;
-      hist.whiteApplied = snap.whiteApplied;
-      hist.blackApplied = snap.blackApplied;
-      hist.collision = snap.collision;
-      hist.captures.clear();
-      for (const c of snap.captures.toArray()) hist.captures.push(c);
-      round.steps.push(hist);
-
-      if (step.gameOver && step.winner) {
-        this.state.fen = fen;
-        round.fenAfter = fen;
-        this.state.resolvedRounds.push(round);
-        this.state.historyLog.push(formatRoundHistoryLine(round));
-        this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
-        this.endGame(step.winner, "king");
-        return;
-      }
-    }
-
-    this.state.fen = fen;
-    round.fenAfter = fen;
+    const resolved = resolvePlannedRound({
+      fen: this.state.fen,
+      roundIndex: this.state.roundIndex,
+      slots: this.predictiveSlots,
+      whiteMoves: wm,
+      blackMoves: bm,
+      whiteBid: this.whiteBid,
+      blackBid: this.blackBid,
+      whiteTokens: this.state.whiteTokens,
+      blackTokens: this.state.blackTokens,
+    });
+    this.whiteBid = null;
+    this.blackBid = null;
+    this.state.whiteTokens = resolved.whiteTokens;
+    this.state.blackTokens = resolved.blackTokens;
+    round.whiteTokensAfter = resolved.whiteTokens;
+    round.blackTokensAfter = resolved.blackTokens;
+    appendResolvedSteps(this.state.lastResolutionSteps, round, resolved.steps);
+    this.state.fen = resolved.fen;
+    round.fenAfter = resolved.fen;
     this.state.resolvedRounds.push(round);
     this.state.historyLog.push(formatRoundHistoryLine(round));
     this.broadcast("round_resolved", serializeRoundResolvedPayload(round));
-    this.state.roundIndex++;
+    this.broadcastStatus();
 
-    const chess = new Chess();
-    chess.load(fen);
+    if (resolved.winner) {
+      this.endGame(resolved.winner, "king");
+      return;
+    }
+
+    const chess = safeLoadChess(resolved.fen);
+    if (!chess) {
+      const byKings = kingCaptureWinner(resolved.fen, "w");
+      this.endGame(byKings ?? "draw", byKings ? "king" : "draw");
+      return;
+    }
     if (chess.isCheckmate()) {
       const loser = chess.turn();
       this.endGame(loser === "w" ? "black" : "white", "checkmate");

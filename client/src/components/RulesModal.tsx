@@ -6,19 +6,23 @@ type Props = {
 const CORE_RULES: { title: string; body: string }[] = [
   {
     title: "Pianificazione",
-    body: "Si programma una sequenza di N mosse simultaneamente.",
+    body: "Si programma una sequenza di N mosse. L'avversario non vede il piano finché il round non si risolve.",
   },
   {
-    title: "Risoluzione",
-    body: "Le mosse vengono eseguite in sequenza alternata (1W, 1B, 2W...).",
+    title: "Gettoni Iniziativa",
+    body: "Si parte con 3 gettoni a testa. A ogni nuovo round di pianificazione, dopo il primo, +1 gettone fino a un massimo di 4. I saldi sono pubblici. Puoi offrire gettoni su un solo slot: l'offerta resta nascosta fino alla risoluzione.",
   },
   {
-    title: "Collisioni",
-    body: "Se una mossa diventa illegale a causa di un'azione avversaria, viene saltata.",
+    title: "Priorità",
+    body: "In ogni step muove per primo chi ha l'unica offerta, oppure chi ha offerto di più. A parità spende chi resta con meno gettoni. Senza offerte si alterna: il Bianco è primo solo se (round + step) è pari, altrimenti il Nero. Non si annullano mai entrambe le mosse.",
+  },
+  {
+    title: "Catture",
+    body: "La mossa del secondo viene controllata dopo quella del primo. Se diventa illegale, viene saltata. Catturare il Re chiude la partita: se entrambi lo catturerebbero nello stesso step, vince chi ha la priorità.",
   },
   {
     title: "Ricattura Anticipata",
-    body: "È consentito pianificare mosse su case attualmente occupate da propri pezzi, prevedendo che si libereranno.",
+    body: "È consentito pianificare mosse su case occupate da propri pezzi (non dal proprio Re), prevedendo che si libereranno.",
   },
   {
     title: "Scacco Vibe",
