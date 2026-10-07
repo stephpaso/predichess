@@ -20,6 +20,10 @@ export class StepSnapshot extends Schema {
   @type("boolean") blackApplied: boolean = false;
   @type("boolean") collision: boolean = false;
   @type(["string"]) captures = new ArraySchema<string>();
+  @type("string") firstMover: string = "";
+  @type("string") fenAfterFirst: string = "";
+  @type("number") whiteBidAmount: number = 0;
+  @type("number") blackBidAmount: number = 0;
 }
 
 export class RoundSnapshot extends Schema {
@@ -27,6 +31,12 @@ export class RoundSnapshot extends Schema {
   @type("string") fenBefore: string = "";
   @type("string") fenAfter: string = "";
   @type([StepSnapshot]) steps = new ArraySchema<StepSnapshot>();
+  @type("number") whiteBidSlot: number = -1;
+  @type("number") whiteBidAmount: number = 0;
+  @type("number") blackBidSlot: number = -1;
+  @type("number") blackBidAmount: number = 0;
+  @type("number") whiteTokensAfter: number = 0;
+  @type("number") blackTokensAfter: number = 0;
 }
 
 export class PredictChessState extends Schema {
@@ -63,4 +73,7 @@ export class PredictChessState extends Schema {
   @type([RoundSnapshot]) resolvedRounds = new ArraySchema<RoundSnapshot>();
 
   @type(["string"]) historyLog = new ArraySchema<string>();
+
+  @type("number") whiteTokens: number = 3;
+  @type("number") blackTokens: number = 3;
 }

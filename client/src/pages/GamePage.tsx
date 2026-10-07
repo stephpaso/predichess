@@ -157,6 +157,19 @@ export function GamePage() {
   const [roundIndex, setRoundIndex] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
   const [slotCount, setSlotCount] = useState(3);
+  const [whiteTokens, setWhiteTokens] = useState(3);
+  const [blackTokens, setBlackTokens] = useState(3);
+  const [bidSlot, setBidSlot] = useState<number | null>(null);
+  const [bidAmount, setBidAmount] = useState(0);
+  const [bidTouch, setBidTouch] = useState(0);
+  const [tokenPulse, setTokenPulse] = useState<"w" | "b" | null>(null);
+  const [priorityCue, setPriorityCue] = useState<{
+    step: number;
+    first: string;
+    whiteBid: number;
+    blackBid: number;
+  } | null>(null);
+  const prevTokensRef = useRef({ w: 3, b: 3 });
   const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(3));
   const [locked, setLocked] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
@@ -218,6 +231,10 @@ export function GamePage() {
     setWinner(s.winner ?? "");
     setGameOverReason(s.gameOverReason ?? "");
     setRoundIndex(nextRound);
+    const nextWhiteTokens = Number.isFinite(s.whiteTokens) ? s.whiteTokens : 3;
+    const nextBlackTokens = Number.isFinite(s.blackTokens) ? s.blackTokens : 3;
+    setWhiteTokens(nextWhiteTokens);
+    setBlackTokens(nextBlackTokens);
     const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
     setSlotCount(slots);
 
@@ -248,6 +265,9 @@ export function GamePage() {
         setPickFrom(null);
         setHistoryCursor(null);
         autoConfirmRoundRef.current = -1;
+        setBidSlot(null);
+        setBidAmount(0);
+        setBidTouch(0);
       }
       if (me?.color === "white") setLocked(s.whiteLocked);
       else if (me?.color === "black") setLocked(s.blackLocked);
@@ -283,6 +303,8 @@ export function GamePage() {
         gameOverReason?: string;
         whiteLocked?: boolean;
         blackLocked?: boolean;
+        whiteTokens?: number;
+        blackTokens?: number;
         players?: Array<{ sessionId: string; color: string; connected: boolean }>;
         predictiveSlots?: number;
       },
@@ -306,6 +328,12 @@ export function GamePage() {
       setWinner(msg.winner ?? "");
       setGameOverReason(msg.gameOverReason ?? "");
       setRoundIndex(nextRound);
+      if (typeof msg.whiteTokens === "number" && Number.isFinite(msg.whiteTokens)) {
+        setWhiteTokens(msg.whiteTokens);
+      }
+      if (typeof msg.blackTokens === "number" && Number.isFinite(msg.blackTokens)) {
+        setBlackTokens(msg.blackTokens);
+      }
       const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
       setSlotCount(slots);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
@@ -325,6 +353,9 @@ export function GamePage() {
           setPickFrom(null);
           setHistoryCursor(null);
           autoConfirmRoundRef.current = -1;
+          setBidSlot(null);
+          setBidAmount(0);
+          setBidTouch(0);
         }
       }
     },
@@ -382,6 +413,18 @@ export function GamePage() {
         r.onMessage("round_resolved", (msg) =>
           handleRoundResolvedRef.current(msg as RoundResolvedPayload)
         );
+        r.onMessage("my_bid", (msg: { slot?: number; amount?: number }) => {
+          const slot = msg?.slot;
+          const amount = msg?.amount;
+          if (typeof slot !== "number" || typeof amount !== "number") return;
+          if (!Number.isInteger(slot) || !Number.isInteger(amount) || slot < 0 || amount <= 0) {
+            setBidSlot(null);
+            setBidAmount(0);
+            return;
+          }
+          setBidSlot(slot);
+          setBidAmount(amount);
+        });
         r.send("status_req");
       } catch (err) {
         console.error("joinPredictRoom", err);
@@ -438,16 +481,31 @@ export function GamePage() {
       void (async () => {
         let fenBeforeStep = fenBeforeRound;
         try {
-          for (const s of steps) {
+          for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+            const s = steps[stepIndex]!;
             const wm = (s.whiteMove ?? "").trim();
             const bm = (s.blackMove ?? "").trim();
             const wFrom = wm.length >= 4 ? wm.slice(0, 2) : "";
             const bFrom = bm.length >= 4 ? bm.slice(0, 2) : "";
-            const fenAfterWhite = (s.fenAfterWhite ?? "").trim();
             const fenAfter = (s.fenAfter ?? "").trim();
-            const fenBeforeBlack =
-              s.whiteApplied && fenAfterWhite ? fenAfterWhite : fenBeforeStep;
+            const fenAfterFirst = (s.fenAfterFirst ?? s.fenAfterWhite ?? "").trim();
+            const firstBlack = s.firstMover === "black";
+            const halves = firstBlack
+              ? [
+                  { move: bm, from: bFrom, applied: !!s.blackApplied },
+                  { move: wm, from: wFrom, applied: !!s.whiteApplied },
+                ]
+              : [
+                  { move: wm, from: wFrom, applied: !!s.whiteApplied },
+                  { move: bm, from: bFrom, applied: !!s.blackApplied },
+                ];
 
+            setPriorityCue({
+              step: stepIndex + 1,
+              first: firstBlack ? "Nero" : "Bianco",
+              whiteBid: s.whiteBidAmount ?? 0,
+              blackBid: s.blackBidAmount ?? 0,
+            });
             setDisplayFen(fenBeforeStep);
             setFailedSquare(null);
             if (wFrom || bFrom) {
@@ -461,27 +519,19 @@ export function GamePage() {
             await sleep(INCOMING_HIGHLIGHT_MS);
             setPendingMoveSquares(null);
 
-            if (wm.length >= 4) {
-              if (s.whiteApplied) {
-                setDisplayFen(fenAfterWhite || fenBeforeStep);
-              } else {
-                setFailedSquare(wFrom);
-                await sleep(ILLEGAL_FLASH_MS);
-                setFailedSquare(null);
+            for (let h = 0; h < halves.length; h++) {
+              const half = halves[h]!;
+              if (half.move.length >= 4) {
+                if (half.applied) {
+                  setDisplayFen(h === 0 ? fenAfterFirst || fenBeforeStep : fenAfter || fenBeforeStep);
+                } else {
+                  setFailedSquare(half.from);
+                  await sleep(ILLEGAL_FLASH_MS);
+                  setFailedSquare(null);
+                }
               }
+              await sleep(HALF_MOVE_GAP_MS);
             }
-            await sleep(HALF_MOVE_GAP_MS);
-
-            if (bm.length >= 4) {
-              if (s.blackApplied) {
-                setDisplayFen(fenAfter || fenBeforeBlack);
-              } else {
-                setFailedSquare(bFrom);
-                await sleep(ILLEGAL_FLASH_MS);
-                setFailedSquare(null);
-              }
-            }
-            await sleep(HALF_MOVE_GAP_MS);
 
             fenBeforeStep = fenAfter || fenBeforeStep;
           }
@@ -490,6 +540,7 @@ export function GamePage() {
           setDisplayFen((r?.state?.fen ?? "").trim() || fenBeforeRound);
           setFailedSquare(null);
           setPendingMoveSquares(null);
+          setPriorityCue(null);
           setHistoryCursor(null);
           writeLastAnimatedRoundIndex(code, msg.roundIndex);
         } finally {
@@ -568,6 +619,27 @@ export function GamePage() {
       draftTimer.current = null;
     };
   }, [plan, room, canEditPlan, myColor]);
+
+  const myTokens = myColor === "b" ? blackTokens : whiteTokens;
+
+  useEffect(() => {
+    const prev = prevTokensRef.current;
+    if (whiteTokens < prev.w) setTokenPulse("w");
+    else if (blackTokens < prev.b) setTokenPulse("b");
+    prevTokensRef.current = { w: whiteTokens, b: blackTokens };
+    if (whiteTokens >= prev.w && blackTokens >= prev.b) return;
+    const id = window.setTimeout(() => setTokenPulse(null), 460);
+    return () => window.clearTimeout(id);
+  }, [whiteTokens, blackTokens]);
+
+  useEffect(() => {
+    if (bidTouch === 0 || !room || !canEditPlan || !myColor) return;
+    const id = window.setTimeout(() => {
+      if (bidSlot == null || bidAmount <= 0) room.send("set_bid", { clear: true });
+      else room.send("set_bid", { slot: bidSlot, amount: bidAmount });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [bidTouch, bidSlot, bidAmount, room, canEditPlan, myColor]);
 
   const historyFens = useMemo(() => {
     const rounds = readArraySchema<RoundSnapshot>(room?.state?.resolvedRounds);
@@ -773,7 +845,11 @@ export function GamePage() {
     const moves = plan.map((p) =>
       p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
     );
-    room.send("submit_plan", { moves });
+    const bid =
+      bidSlot != null && bidAmount > 0 && bidAmount <= myTokens
+        ? { slot: bidSlot, amount: bidAmount }
+        : null;
+    room.send("submit_plan", { moves, bid });
     setLocked(true);
   }
 
@@ -791,7 +867,11 @@ export function GamePage() {
     const moves = plan.map((p) =>
       p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
     );
-    room.send("submit_plan", { moves });
+    const bid =
+      bidSlot != null && bidAmount > 0 && bidAmount <= myTokens
+        ? { slot: bidSlot, amount: bidAmount }
+        : null;
+    room.send("submit_plan", { moves, bid });
     setLocked(true);
   }, [
     plan,
@@ -803,6 +883,9 @@ export function GamePage() {
     phase,
     roundIndex,
     inCheckAtStart,
+    bidSlot,
+    bidAmount,
+    myTokens,
   ]);
 
   const slotsUi = useMemo(() => plan, [plan]);
@@ -892,10 +975,35 @@ export function GamePage() {
       )}
 
       {phase === "planning" && (
-        <div className="mb-3 flex items-center justify-between text-sm">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
           <span className="text-slate-400">Pianificazione</span>
-          <span className="font-mono text-amber-300">
-            {(timerMs / 1000).toFixed(1)}s
+          <div className="flex items-center gap-2">
+            <TokenChip
+              label="Bianco"
+              count={whiteTokens}
+              mine={myColor === "w"}
+              pulse={tokenPulse === "w"}
+            />
+            <TokenChip
+              label="Nero"
+              count={blackTokens}
+              mine={myColor === "b"}
+              pulse={tokenPulse === "b"}
+            />
+            <span className="font-mono text-amber-300">
+              {(timerMs / 1000).toFixed(1)}s
+            </span>
+          </div>
+        </div>
+      )}
+
+      {priorityCue && (phase === "resolution" || isAnimating) && (
+        <div className="priority-pop mb-3 rounded-2xl border border-amber-400/40 bg-amber-950/50 px-4 py-2 text-center text-sm text-amber-100">
+          <span className="font-semibold">Priorità step {priorityCue.step}: {priorityCue.first}</span>
+          <span className="mt-0.5 block text-[12px] text-amber-200/80">
+            {priorityCue.whiteBid <= 0 && priorityCue.blackBid <= 0
+              ? "Nessuna offerta → alternanza"
+              : `Offerte Bianco ${priorityCue.whiteBid} · Nero ${priorityCue.blackBid}`}
           </span>
         </div>
       )}
@@ -1048,23 +1156,116 @@ export function GamePage() {
             className="mt-3 grid gap-2"
             style={{ gridTemplateColumns: `repeat(${slotCount}, minmax(0, 1fr))` }}
           >
-            {slotsUi.map((p, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => setActiveSlot(i)}
-                className={`flex min-h-14 flex-col rounded-lg border px-1 py-2 text-center text-[10px] leading-tight ${
-                  activeSlot === i
-                    ? "border-indigo-500 bg-indigo-950/50"
-                    : "border-white/10 bg-slate-900"
-                }`}
-              >
-                <span className="text-slate-500">#{i + 1}</span>
-                <span className="font-mono text-slate-200">
-                  {p.from && p.to ? `${p.from}→${p.to}` : "—"}
-                </span>
-              </button>
-            ))}
+            {slotsUi.map((p, i) => {
+              const contested = bidSlot === i && bidAmount > 0;
+              return (
+                <div
+                  key={i}
+                  className={`flex min-h-14 flex-col overflow-hidden rounded-lg border ${
+                    contested
+                      ? "border-amber-400 bg-amber-950/40 ring-2 ring-amber-400/70"
+                      : activeSlot === i
+                        ? "border-indigo-500 bg-indigo-950/50"
+                        : "border-white/10 bg-slate-900"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setActiveSlot(i)}
+                    className="flex min-h-11 flex-col px-1 py-2 text-center text-[10px] leading-tight"
+                  >
+                    <span className="text-slate-500">#{i + 1}</span>
+                    <span className="font-mono text-slate-200">
+                      {p.from && p.to ? `${p.from}→${p.to}` : "—"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={contested}
+                    aria-label={`Contesta priorità slot ${i + 1}`}
+                    disabled={!canEditPlan || viewingHistory || myTokens <= 0 || locked}
+                    onClick={() => {
+                      if (!canEditPlan || myTokens <= 0) return;
+                      setBidTouch((n) => n + 1);
+                      setBidSlot(i);
+                      setBidAmount((amt) => {
+                        if (bidSlot === i && amt > 0) return Math.min(amt, myTokens);
+                        return Math.min(Math.max(amt, 1), myTokens);
+                      });
+                    }}
+                    className={`min-h-11 border-t text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${
+                      contested
+                        ? "border-amber-400/40 bg-amber-500/20 text-amber-100"
+                        : "border-white/10 text-slate-400"
+                    }`}
+                  >
+                    {contested ? `◆ ${bidAmount}` : "◆"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950 px-3 py-3">
+            {myTokens <= 0 ? (
+              <p className="text-sm text-slate-400">
+                Nessun gettone: in questo round non puoi contestare la priorità.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm text-slate-200">
+                    {bidSlot == null || bidAmount <= 0
+                      ? "Tocca ◆ su uno slot per contestarlo."
+                      : `Priorità sullo slot ${bidSlot + 1}`}
+                  </p>
+                  <p className="font-mono text-sm text-amber-200">
+                    {bidAmount > 0 ? `${myTokens} → ${Math.max(0, myTokens - bidAmount)}` : `${myTokens} gettoni`}
+                  </p>
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    className="grid h-11 w-11 place-items-center rounded-xl bg-slate-800 text-lg disabled:opacity-40"
+                    disabled={!canEditPlan || bidSlot == null || bidAmount <= 1}
+                    onClick={() => {
+                      setBidTouch((n) => n + 1);
+                      setBidAmount((n) => Math.max(1, n - 1));
+                    }}
+                    aria-label="Diminuisci offerta"
+                  >
+                    −
+                  </button>
+                  <div className="grid h-11 min-w-11 flex-1 place-items-center rounded-xl bg-slate-900 font-mono text-slate-100 ring-1 ring-white/10">
+                    {bidSlot == null ? "—" : bidAmount}
+                  </div>
+                  <button
+                    type="button"
+                    className="grid h-11 w-11 place-items-center rounded-xl bg-slate-800 text-lg disabled:opacity-40"
+                    disabled={!canEditPlan || bidSlot == null || bidAmount >= myTokens}
+                    onClick={() => {
+                      setBidTouch((n) => n + 1);
+                      setBidAmount((n) => Math.min(myTokens, n + 1));
+                    }}
+                    aria-label="Aumenta offerta"
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    className="h-11 rounded-xl bg-slate-800 px-3 text-sm disabled:opacity-40"
+                    disabled={!canEditPlan || bidSlot == null}
+                    onClick={() => {
+                      setBidTouch((n) => n + 1);
+                      setBidSlot(null);
+                      setBidAmount(0);
+                    }}
+                  >
+                    Annulla
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="mt-3 flex gap-2">
@@ -1088,6 +1289,34 @@ export function GamePage() {
         </>
       )}
     </div>
+  );
+}
+
+function TokenChip({
+  label,
+  count,
+  mine,
+  pulse,
+}: {
+  label: string;
+  count: number;
+  mine: boolean;
+  pulse: boolean;
+}) {
+  return (
+    <span
+      className={`inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-xs ${
+        pulse ? "token-spend" : ""
+      } ${
+        mine
+          ? "border-amber-400/50 bg-amber-950/60 text-amber-100"
+          : "border-white/10 bg-slate-900 text-slate-200"
+      }`}
+    >
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <span className="font-mono text-sm font-semibold">{count}</span>
+      <span className="text-[10px] text-slate-500">/4</span>
+    </span>
   );
 }
 
@@ -1185,7 +1414,15 @@ function RoundHistoryPanel({
                 const b = s.blackMove
                   ? `Nero ${s.blackMove.slice(0, 2)}→${s.blackMove.slice(2)}`
                   : "Nero —";
-                return `S${i + 1}: ${w}, ${b}`;
+                const who = s.firstMover === "black" ? "Nero" : s.firstMover === "white" ? "Bianco" : "";
+                const wb = s.whiteBidAmount ?? 0;
+                const bb = s.blackBidAmount ?? 0;
+                const prio = who
+                  ? wb <= 0 && bb <= 0
+                    ? `priorità ${who} (nessuna offerta → alternanza)`
+                    : `priorità ${who} (offerte B${wb}/N${bb})`
+                  : "";
+                return `S${i + 1}: ${w}, ${b}${prio ? ` · ${prio}` : ""}`;
               })
               .join(" · ");
             const lastFen = steps.length ? steps[steps.length - 1].fenAfter : r.fenAfter;

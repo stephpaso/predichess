@@ -15,7 +15,7 @@ export default defineConfig({
       manifest: {
         name: "Predict Chess",
         short_name: "Predict Chess",
-        description: "Scacchi con mosse programmate e risoluzione simultanea",
+        description: "Scacchi con mosse programmate e gettoni iniziativa",
         theme_color: "#0f172a",
         background_color: "#0f172a",
         display: "standalone",
