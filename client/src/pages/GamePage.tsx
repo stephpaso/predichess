@@ -31,8 +31,13 @@ import {
 
 type Planned = { from: Square; to: Square };
 
+function clampSlotCount(slots: number): number {
+  const n = Math.floor(Number(slots) || 0);
+  return Math.max(2, Math.min(5, n || 2));
+}
+
 function makeEmptyPlan(slots: number): Planned[] {
-  const n = Math.max(1, Math.min(5, Math.floor(slots || 0)));
+  const n = clampSlotCount(slots);
   return Array.from({ length: n }, () => ({ from: "" as Square, to: "" as Square }));
 }
 
@@ -156,7 +161,7 @@ export function GamePage() {
   const [gameOverReason, setGameOverReason] = useState("");
   const [roundIndex, setRoundIndex] = useState(0);
   const [playersCount, setPlayersCount] = useState(0);
-  const [slotCount, setSlotCount] = useState(3);
+  const [slotCount, setSlotCount] = useState(2);
   const [whiteTokens, setWhiteTokens] = useState(3);
   const [blackTokens, setBlackTokens] = useState(3);
   const [bidSlot, setBidSlot] = useState<number | null>(null);
@@ -170,7 +175,7 @@ export function GamePage() {
     blackBid: number;
   } | null>(null);
   const prevTokensRef = useRef({ w: 3, b: 3 });
-  const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(3));
+  const [plan, setPlan] = useState<Planned[]>(() => makeEmptyPlan(2));
   const [locked, setLocked] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
   const [displayFen, setDisplayFen] = useState(() => new Chess().fen());
@@ -184,7 +189,6 @@ export function GamePage() {
   const resolutionAnimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastValidFenRef = useRef<string>(new Chess().fen());
   const roomRef = useRef<PredictRoom | null>(null);
-  const autoConfirmRoundRef = useRef<number>(-1);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [pickFrom, setPickFrom] = useState<Square | null>(null);
   /** Bumps on every Colyseus state patch so React re-reads nested ArraySchemas (history). */
@@ -235,7 +239,7 @@ export function GamePage() {
     const nextBlackTokens = Number.isFinite(s.blackTokens) ? s.blackTokens : 3;
     setWhiteTokens(nextWhiteTokens);
     setBlackTokens(nextBlackTokens);
-    const slots = Math.max(1, Math.min(5, Math.floor(Number(s.predictiveSlots ?? 3) || 0)));
+    const slots = clampSlotCount(Number(s.predictiveSlots ?? 2));
     setSlotCount(slots);
 
     // First Colyseus sync can omit nested Schema fields briefly ("refId" hydration).
@@ -264,7 +268,6 @@ export function GamePage() {
         setActiveSlot(0);
         setPickFrom(null);
         setHistoryCursor(null);
-        autoConfirmRoundRef.current = -1;
         setBidSlot(null);
         setBidAmount(0);
         setBidTouch(0);
@@ -334,7 +337,7 @@ export function GamePage() {
       if (typeof msg.blackTokens === "number" && Number.isFinite(msg.blackTokens)) {
         setBlackTokens(msg.blackTokens);
       }
-      const slots = Math.max(1, Math.min(5, Math.floor(Number(msg.predictiveSlots ?? slotCount) || 0)));
+      const slots = clampSlotCount(Number(msg.predictiveSlots ?? slotCount));
       setSlotCount(slots);
       const players: Array<{ sessionId: string; color: string; connected: boolean }> =
         msg.players ?? [];
@@ -352,7 +355,6 @@ export function GamePage() {
           setActiveSlot(0);
           setPickFrom(null);
           setHistoryCursor(null);
-          autoConfirmRoundRef.current = -1;
           setBidSlot(null);
           setBidAmount(0);
           setBidTouch(0);
@@ -561,7 +563,7 @@ export function GamePage() {
     for (const m of nextPlan) {
       if (!m.from || !m.to) continue;
       const next = applyPlanningMove(fen, m.from, m.to, color);
-      if (!next) break;
+      if (!next) continue;
       fen = next;
     }
     return fen;
@@ -853,41 +855,6 @@ export function GamePage() {
     setLocked(true);
   }
 
-  useEffect(() => {
-    if (!room || !canEditPlan || !myColor || viewingHistory || locked) return;
-    if (phase !== "planning") return;
-    const full = plan.every((p) => !!(p.from && p.to));
-    if (!full) return;
-    if (autoConfirmRoundRef.current === roundIndex) return;
-    if (inCheckAtStart) {
-      const hasAnyMove = plan.some((p) => !!(p.from && p.to));
-      if (!hasAnyMove) return;
-    }
-    autoConfirmRoundRef.current = roundIndex;
-    const moves = plan.map((p) =>
-      p.from && p.to ? { from: p.from, to: p.to } : { from: "", to: "" }
-    );
-    const bid =
-      bidSlot != null && bidAmount > 0 && bidAmount <= myTokens
-        ? { slot: bidSlot, amount: bidAmount }
-        : null;
-    room.send("submit_plan", { moves, bid });
-    setLocked(true);
-  }, [
-    plan,
-    room,
-    canEditPlan,
-    myColor,
-    viewingHistory,
-    locked,
-    phase,
-    roundIndex,
-    inCheckAtStart,
-    bidSlot,
-    bidAmount,
-    myTokens,
-  ]);
-
   const slotsUi = useMemo(() => plan, [plan]);
 
   const lobbyWait =
@@ -899,7 +866,11 @@ export function GamePage() {
     myColor === "w" ? "Bianco" : myColor === "b" ? "Nero" : "—";
 
   return (
-    <div className="mx-auto flex min-h-[100dvh] max-w-5xl flex-col px-3 pb-8 pt-6">
+    <div
+      className={`mx-auto flex min-h-[100dvh] max-w-5xl flex-col px-3 pt-6 ${
+        phase === "planning" && myColor ? "pb-28 lg:pb-8" : "pb-8"
+      }`}
+    >
       {toast && (
         <div className="fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full bg-slate-900/90 px-4 py-2 text-xs text-slate-100 shadow-lg ring-1 ring-white/10">
           {toast}
@@ -1123,34 +1094,15 @@ export function GamePage() {
           />
         </div>
 
-        <div className="w-full min-h-0 shrink-0 lg:w-80">
-          <RoundHistoryPanel
-            rounds={resolvedRoundsList}
-            historyLines={historyLogList}
-            cursor={historyCursor}
-            totalFens={historyFens.length}
-            onBack={goHistoryBack}
-            onForward={goHistoryForward}
-            onSelectFen={(fen) => {
-              const idx = historyFens.findLastIndex((f) => f === fen);
-              if (idx >= 0) setHistoryCursor(idx);
-            }}
-          />
-        </div>
-      </div>
-
-      {viewingHistory && (
-        <p className="mt-2 text-center text-[11px] text-slate-500">
-          Modalità storico: input mosse disabilitato ({historyCursor! + 1}/{historyFens.length})
-        </p>
-      )}
-
-      {phase === "planning" && myColor && (
-        <>
-          <p className="mt-4 text-center text-xs text-slate-500">
-            Sei {myColor === "w" ? "Bianco" : "Nero"} — slot attivo:{" "}
-            {activeSlot + 1}
-          </p>
+        <div className="flex w-full min-w-0 flex-col gap-3 lg:w-80">
+          {phase === "planning" && myColor && (
+            <>
+              <p className="text-center text-xs text-slate-500 lg:text-left">
+                Sei {myColor === "w" ? "Bianco" : "Nero"} — slot attivo: {activeSlot + 1}
+              </p>
+              <p className="text-center text-[11px] text-slate-500 lg:text-left">
+                Slot vuoto = passo. Conferma blocca mosse e offerta.
+              </p>
 
           <div
             className="mt-3 grid gap-2"
@@ -1268,25 +1220,64 @@ export function GamePage() {
             )}
           </div>
 
-          <div className="mt-3 flex gap-2">
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={() => clearSlot(activeSlot)}
-              className="flex-1 rounded-lg bg-slate-800 py-2 text-sm"
-                disabled={!canEditPlan || viewingHistory}
+              className="h-11 flex-1 rounded-xl bg-slate-800 text-sm disabled:opacity-40"
+              disabled={!canEditPlan || viewingHistory}
             >
               Svuota slot
             </button>
             <button
               type="button"
               onClick={confirmPlan}
-              className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-medium disabled:opacity-40"
-                disabled={!canEditPlan || locked || viewingHistory}
+              className="hidden h-11 flex-1 rounded-xl bg-indigo-600 text-sm font-medium text-white disabled:opacity-40 lg:block"
+              disabled={!canEditPlan || locked || viewingHistory}
             >
               Conferma
             </button>
           </div>
-        </>
+            </>
+          )}
+
+          {viewingHistory && (
+            <p className="text-center text-[11px] text-slate-500 lg:text-left">
+              Modalità storico: input mosse disabilitato ({historyCursor! + 1}/{historyFens.length})
+            </p>
+          )}
+
+          <RoundHistoryPanel
+            rounds={resolvedRoundsList}
+            historyLines={historyLogList}
+            cursor={historyCursor}
+            totalFens={historyFens.length}
+            onBack={goHistoryBack}
+            onForward={goHistoryForward}
+            onSelectFen={(fen) => {
+              const idx = historyFens.findLastIndex((f) => f === fen);
+              if (idx >= 0) setHistoryCursor(idx);
+            }}
+          />
+        </div>
+      </div>
+
+      {phase === "planning" && myColor && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-slate-950/95 px-3 py-3 backdrop-blur lg:hidden">
+          <div className="mx-auto flex max-w-5xl items-center gap-3 pb-[env(safe-area-inset-bottom)]">
+            <p className="min-w-0 flex-1 font-mono text-sm text-amber-200">
+              {bidAmount > 0 ? `${myTokens} → ${Math.max(0, myTokens - bidAmount)}` : `${myTokens} gettoni`}
+            </p>
+            <button
+              type="button"
+              onClick={confirmPlan}
+              className="h-12 min-w-32 rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white disabled:opacity-40"
+              disabled={!canEditPlan || locked || viewingHistory}
+            >
+              Conferma
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

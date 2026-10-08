@@ -6,7 +6,7 @@ type Props = {
 const CORE_RULES: { title: string; body: string }[] = [
   {
     title: "Pianificazione",
-    body: "Si programma una sequenza di N mosse. L'avversario non vede il piano finché il round non si risolve.",
+    body: "Si programmano fino a N mosse (da 2 a 5). Gli slot vuoti sono passi: si giocano solo le mosse scelte. Conferma blocca il piano e l'offerta. Se non confermi, il limite è 45 secondi.",
   },
   {
     title: "Gettoni Iniziativa",
@@ -18,15 +18,15 @@ const CORE_RULES: { title: string; body: string }[] = [
   },
   {
     title: "Catture",
-    body: "La mossa del secondo viene controllata dopo quella del primo. Se diventa illegale, viene saltata. Catturare il Re chiude la partita: se entrambi lo catturerebbero nello stesso step, vince chi ha la priorità.",
+    body: "La mossa del secondo viene controllata dopo quella del primo. Se diventa illegale, si salta solo quello slot. Le mosse successive scelte restano in gioco. Catturare il Re chiude la partita: se entrambi lo catturerebbero nello stesso step, vince chi ha la priorità.",
   },
   {
     title: "Ricattura Anticipata",
     body: "È consentito pianificare mosse su case occupate da propri pezzi (non dal proprio Re), prevedendo che si libereranno.",
   },
   {
-    title: "Scacco Vibe",
-    body: "Se sei sotto scacco, DEVI pianificare almeno una mossa che teoricamente ti liberi. Se ignori lo scacco, perdi all'istante. Se provi a liberarti ma l'avversario ti blocca di nuovo, il gioco prosegue.",
+    title: "Scacco e squalifica",
+    body: "Se sei sotto scacco, devi pianificare almeno una mossa che ti liberi. Se ignori lo scacco, perdi subito. Due round di fila senza alcuna mossa ti squalificano: quel round si risolve lo stesso, poi perdi. Se entrambi non muovono per due round, è patta.",
   },
 ];
 

@@ -17,11 +17,11 @@ Movimento: I pezzi si muovono seguendo le regole classiche degli scacchi.
 A differenza degli scacchi tradizionali, il gioco si svolge in round simultanei.
 
 ```
-La Sequenza: All'inizio di ogni round, entrambi i giocatori devono programmare una sequenza esatta di mosse (il numero di slot è scelto a inizio partita, da 1 a 5).
+La Sequenza: All'inizio di ogni round entrambi i giocatori possono programmare fino a N mosse. N si sceglie a inizio partita, da 2 a 5 (default 2). Non è obbligatorio riempire ogni slot.
 
-Il Timer: I giocatori hanno un limite di tempo rigoroso (di default 20 secondi) per completare la loro sequenza.
+Il Timer: C'è un limite di tempo, di default 45 secondi. Il round di pianificazione si chiude quando entrambi premono Conferma, oppure allo scadere del tempo. Allo scadere restano bloccate le mosse già scelte e l'offerta di iniziativa impostata.
 
-Conferma: Una volta scelte le mosse, il giocatore preme "Conferma". Se il timer scade prima della conferma, le mosse inserite fino a quel momento vengono bloccate, insieme all'offerta di iniziativa impostata. Eventuali slot vuoti nella sequenza vengono considerati come "Passa il turno" per quegli specifici step. I giocatori non vedono le mosse dell'avversario durante questa fase.
+Conferma: Il giocatore preme "Conferma" per bloccare mosse e offerta. La sequenza non si blocca da sola quando gli slot sono pieni. Gli slot vuoti valgono come "Passa il turno" in quello step: si giocano solo le mosse scelte. Se una mossa diventa illegale in risoluzione, si salta solo quello slot; le mosse scelte negli slot successivi si tentano comunque. I giocatori non vedono le mosse dell'avversario durante questa fase.
 ```
 
 3. Fase di Risoluzione (Esecuzione)
@@ -31,7 +31,7 @@ Una volta che entrambi i giocatori hanno confermato (o il timer è scaduto), la 
 In ogni step c'è sempre un primo giocatore e poi l'altro. Non esiste una risoluzione simultanea che annulli o distrugga entrambe le mosse. Chi muove per primo è deciso dai Gettoni Iniziativa. La mossa del secondo viene controllata sulla scacchiera già aggiornata dalla prima.
 
 ```
-La Mossa Irregolare (Azione Annullata): Se, al momento dell'esecuzione, la mossa programmata da un giocatore risulta impossibile a causa dei cambiamenti avvenuti sulla scacchiera, la mossa non viene effettuata. Il pezzo rimane fermo.
+La Mossa Irregolare (Azione Annullata): Se, al momento dell'esecuzione, la mossa programmata da un giocatore risulta impossibile a causa dei cambiamenti avvenuti sulla scacchiera, quella mossa non viene effettuata. Il pezzo rimane fermo. Il resto del piano non si cancella: gli slot successivi con una mossa scelta vengono comunque tentati.
 
 Esempio: Avevi programmato di muovere l'Alfiere in C4 allo step 3. Allo step 2 l'avversario ha posizionato un suo pezzo sulla traiettoria, bloccandola. Allo step 3 la tua mossa è invalida e il tuo Alfiere non si muove.
 
@@ -74,6 +74,10 @@ La partita termina immediatamente durante la Fase di Risoluzione non appena si v
 
 ```
 Scacco Matto / Cattura del Re: Se un Re viene catturato (poiché il giocatore non aveva previsto la minaccia e non l'ha spostato o difeso) o viene messo in una posizione di scacco matto classico al termine della sequenza. La cattura del Re chiude la partita subito, nell'ordine di priorità dello step, senza errori e senza annullare la mossa di chi ha colpito per primo.
+
+Scacco non parato: Se un giocatore inizia il round sotto scacco e nessuna delle mosse scelte lo fa uscire dallo scacco, perde subito. Gli slot vuoti non parano lo scacco.
+
+Squalifica: Se un giocatore non programma alcuna mossa per due round di fila, perde. Quel round viene comunque risolto, quindi le mosse dell'avversario valgono. Se entrambi restano senza mosse per due round, la partita è patta. Contro il computer la squalifica vale per il giocatore umano.
 
 Stallo (Pareggio): Se al termine degli step nessuno dei giocatori ha mosse legali a disposizione, o se rimangono solo i due Re sulla scacchiera.
 ```
