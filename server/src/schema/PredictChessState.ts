@@ -53,8 +53,8 @@ export class PredictChessState extends Schema {
   @type("number") roundIndex: number = 0;
 
   // Room options (set on create)
-  @type("number") turnTimeMs: number = 20_000;
-  @type("number") predictiveSlots: number = 3; // 1-5
+  @type("number") turnTimeMs: number = 45_000;
+  @type("number") predictiveSlots: number = 2; // 2-5
   @type("boolean") isPublic: boolean = true;
   @type("string") hostColorPref: string = "random"; // white | black | random
   /** "classic" | "shuffle" — shuffle starts from a random balanced midgame FEN. */

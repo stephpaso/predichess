@@ -56,10 +56,10 @@ export function BotSetupPage() {
   const [difficulty, setDifficulty] = useState<Difficulty>(DIFFICULTIES[1]);
   const [color, setColor] = useState<"white" | "black" | "random">("random");
   const [gameMode, setGameMode] = useState<GameModeOption>("classic");
-  const [predictiveMoves, setPredictiveMoves] = useState<number>(3);
+  const [predictiveMoves, setPredictiveMoves] = useState<number>(2);
 
   const normalized = useMemo(() => {
-    const s = Math.max(1, Math.min(5, Math.floor(Number(predictiveMoves) || 0)));
+    const s = Math.max(2, Math.min(5, Math.floor(Number(predictiveMoves) || 0)));
     return { s };
   }, [predictiveMoves]);
 
@@ -196,8 +196,8 @@ export function BotSetupPage() {
             <label className="text-sm text-slate-300">Mosse predittive</label>
             <span className="font-mono text-sm text-amber-300">{normalized.s}</span>
           </div>
-          <div className="mt-3 grid grid-cols-5 gap-2">
-            {Array.from({ length: 5 }, (_, i) => i + 1).map((n) => (
+          <div className="mt-3 grid grid-cols-4 gap-2">
+            {Array.from({ length: 4 }, (_, i) => i + 2).map((n) => (
               <button
                 key={n}
                 type="button"
@@ -213,7 +213,7 @@ export function BotSetupPage() {
             ))}
           </div>
           <p className="mt-2 text-[11px] text-slate-500">
-            Selezione discreta (snap), stile Chess.com.
+            Da 2 a 5. Il default è 2.
           </p>
         </div>
 

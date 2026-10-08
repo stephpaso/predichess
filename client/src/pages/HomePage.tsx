@@ -157,7 +157,7 @@ export function HomePage({ onBot }: Props) {
               <li className="rounded-2xl border border-white/10 bg-slate-900/40 p-3">
                 <span className="font-semibold text-slate-100">1) Pianificazione</span>
                 <div className="mt-1 text-slate-400">
-                  Inserisci fino a \(N\) mosse nello stesso round.
+                  Inserisci solo le mosse che vuoi, fino a N slot (da 2 a 5). Uno slot vuoto è un passo. Conferma, oppure attendi il limite di 45 secondi.
                 </div>
               </li>
               <li className="rounded-2xl border border-white/10 bg-slate-900/40 p-3">
@@ -169,7 +169,7 @@ export function HomePage({ onBot }: Props) {
               <li className="rounded-2xl border border-white/10 bg-slate-900/40 p-3">
                 <span className="font-semibold text-slate-100">3) Collisioni</span>
                 <div className="mt-1 text-slate-400">
-                  Se una mossa diventa illegale dopo uno step precedente, viene scartata.
+                  Se una mossa diventa illegale, si scarta solo quello slot. Le altre mosse scelte si tentano comunque.
                 </div>
               </li>
               <li className="rounded-2xl border border-white/10 bg-slate-900/40 p-3">

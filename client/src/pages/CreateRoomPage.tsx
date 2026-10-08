@@ -16,13 +16,13 @@ export function CreateRoomPage() {
 
   const [hostColorPref, setHostColorPref] = useState<MatchRoomOptions["hostColorPref"]>("random");
   const [gameMode, setGameMode] = useState<GameModeOption>("classic");
-  const [turnTimeSec, setTurnTimeSec] = useState<number>(20);
-  const [predictiveSlots, setPredictiveSlots] = useState<number>(3);
+  const [turnTimeSec, setTurnTimeSec] = useState<number>(45);
+  const [predictiveSlots, setPredictiveSlots] = useState<number>(2);
   const [isPublic, setIsPublic] = useState<boolean>(true);
 
   const normalized = useMemo(() => {
     const t = Math.max(10, Math.min(60, Math.floor(Number(turnTimeSec) || 0)));
-    const s = Math.max(1, Math.min(5, Math.floor(Number(predictiveSlots) || 0)));
+    const s = Math.max(2, Math.min(5, Math.floor(Number(predictiveSlots) || 0)));
     return { t, s };
   }, [turnTimeSec, predictiveSlots]);
 
@@ -132,7 +132,7 @@ export function CreateRoomPage() {
             onChange={(e) => setTurnTimeSec(Number(e.target.value))}
             className="mt-3 w-full accent-indigo-500"
           />
-          <p className="mt-2 text-[11px] text-slate-500">Range 10–60 secondi.</p>
+          <p className="mt-2 text-[11px] text-slate-500">Default 45 secondi. Range 10–60. Il turno si chiude anche quando entrambi confermano.</p>
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
@@ -142,13 +142,13 @@ export function CreateRoomPage() {
           </div>
           <input
             type="range"
-            min={1}
+            min={2}
             max={5}
             value={predictiveSlots}
             onChange={(e) => setPredictiveSlots(Number(e.target.value))}
             className="mt-3 w-full accent-indigo-500"
           />
-          <p className="mt-2 text-[11px] text-slate-500">Slot per round (1–5).</p>
+          <p className="mt-2 text-[11px] text-slate-500">Slot per round (2–5). Il default è 2.</p>
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-slate-950 p-4">
