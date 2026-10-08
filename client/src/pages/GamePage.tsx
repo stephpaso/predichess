@@ -867,34 +867,59 @@ export function GamePage() {
 
   return (
     <div
-      className={`mx-auto flex min-h-[100dvh] max-w-5xl flex-col px-3 pt-6 ${
-        phase === "planning" && myColor ? "pb-28 lg:pb-8" : "pb-8"
+      className={`game-shell mx-auto flex min-h-[100dvh] max-w-7xl flex-col px-3 pt-3 sm:px-5 sm:pt-5 ${
+        phase === "planning" && myColor ? "pb-28 lg:pb-10" : "pb-10"
       }`}
     >
       {toast && (
-        <div className="fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full bg-slate-900/90 px-4 py-2 text-xs text-slate-100 shadow-lg ring-1 ring-white/10">
+        <div className="fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-slate-900/95 px-4 py-2 text-xs text-slate-100 shadow-2xl shadow-black/40 backdrop-blur">
           {toast}
         </div>
       )}
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <Link to="/" className="text-sm text-indigo-400">
-          Menu
-        </Link>
-        <div className="flex flex-col items-end gap-1 text-right">
-          {roomId && (
-            <span className="font-mono text-xs text-slate-500">
-              Stanza {roomId}
-            </span>
-          )}
-          <span className="text-[11px] text-slate-500">
-            Fase: <span className="font-mono text-slate-300">{phase}</span> ·{" "}
-            <span className="font-mono text-slate-300">
-              {playersCount}/2
-            </span>{" "}
-            · Tu: <span className="font-mono text-slate-300">{myLabel}</span>
-          </span>
+      <header className="mb-4 flex min-h-14 items-center justify-between gap-3 rounded-2xl border border-white/[0.07] bg-slate-950/70 px-3 py-2.5 shadow-lg shadow-black/10 backdrop-blur sm:px-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link
+            to="/"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/[0.04] text-lg text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+            aria-label="Torna al menu"
+          >
+            ←
+          </Link>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-400/80">
+              Predict Chess
+            </p>
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-sm font-semibold text-slate-100 sm:text-base">
+                {phase === "planning"
+                  ? `Round ${roundIndex + 1}`
+                  : phase === "resolution"
+                    ? "Risoluzione"
+                    : phase === "finished"
+                      ? "Partita conclusa"
+                      : "Stanza di gioco"}
+              </h1>
+              <span className="h-1 w-1 rounded-full bg-slate-600" />
+              <span className="truncate font-mono text-[11px] text-slate-500">{roomId}</span>
+            </div>
+          </div>
         </div>
-      </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="hidden rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1.5 text-[11px] text-slate-400 sm:inline-flex">
+            {playersCount}/2 · {myLabel}
+          </span>
+          {phase !== "lobby" && phase !== "finished" && (
+            <button
+              type="button"
+              className="h-9 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-3 text-xs font-medium text-rose-300 transition hover:border-rose-500/35 hover:bg-rose-500/10 disabled:opacity-40"
+              onClick={() => room?.send("resign")}
+              disabled={!room}
+            >
+              Arrenditi
+            </button>
+          )}
+        </div>
+      </header>
 
       {error && <p className="text-red-400">{error}</p>}
 
@@ -946,8 +971,15 @@ export function GamePage() {
       )}
 
       {phase === "planning" && (
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-          <span className="text-slate-400">Pianificazione</span>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/[0.07] bg-slate-950/50 px-3 py-2.5 text-sm backdrop-blur sm:px-4">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-30" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
+            </span>
+            <span className="font-medium text-slate-200">Pianificazione</span>
+            <span className="hidden text-xs text-slate-500 sm:inline">Scegli le mosse e conferma</span>
+          </div>
           <div className="flex items-center gap-2">
             <TokenChip
               label="Bianco"
@@ -961,7 +993,7 @@ export function GamePage() {
               mine={myColor === "b"}
               pulse={tokenPulse === "b"}
             />
-            <span className="font-mono text-amber-300">
+            <span className="min-w-16 rounded-xl border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-2 text-center font-mono text-sm font-semibold text-amber-300">
               {(timerMs / 1000).toFixed(1)}s
             </span>
           </div>
@@ -1040,21 +1072,11 @@ export function GamePage() {
         </div>
       )}
 
-      {phase !== "lobby" && phase !== "finished" && (
-        <button
-          type="button"
-          className="mb-3 rounded-xl bg-rose-700/80 py-2 text-sm font-medium text-white disabled:opacity-40"
-          onClick={() => room?.send("resign")}
-          disabled={!room}
-        >
-          Arrenditi
-        </button>
-      )}
-
-      <div className="mt-1 flex w-full flex-col gap-3 lg:flex-row lg:items-start lg:justify-center">
-        <div className="w-full max-w-[min(100vw-24px,420px)] shrink-0 self-center">
-          <Chessboard
-            options={{
+      <main className="grid w-full items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px] xl:gap-6">
+        <section className="min-w-0">
+          <div className="game-board-frame mx-auto w-full max-w-[min(100vw-24px,620px)] lg:max-w-[min(100%,calc(100dvh-170px))]">
+            <Chessboard
+              options={{
               position: effectiveBoardFen,
               boardOrientation: orientation,
               animationDurationInMs: BOARD_ANIM_MS,
@@ -1090,45 +1112,58 @@ export function GamePage() {
                 if (!targetSquare) return false;
                 return onPieceDrop(sourceSquare as Square, targetSquare as Square);
               },
-            }}
-          />
-        </div>
+              }}
+            />
+          </div>
+          <div className="mt-3 flex items-center justify-between px-1 text-[11px] text-slate-500">
+            <span>{myColor === "w" ? "Tu giochi Bianco" : myColor === "b" ? "Tu giochi Nero" : "Spettatore"}</span>
+            <span className="font-mono">Round {roundIndex + 1}</span>
+          </div>
+        </section>
 
-        <div className="flex w-full min-w-0 flex-col gap-3 lg:w-80">
+        <aside className="flex w-full min-w-0 flex-col gap-3">
           {phase === "planning" && myColor && (
-            <>
-              <p className="text-center text-xs text-slate-500 lg:text-left">
-                Sei {myColor === "w" ? "Bianco" : "Nero"} — slot attivo: {activeSlot + 1}
-              </p>
-              <p className="text-center text-[11px] text-slate-500 lg:text-left">
-                Slot vuoto = passo. Conferma blocca mosse e offerta.
-              </p>
+            <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-slate-950/75 shadow-xl shadow-black/15 backdrop-blur">
+              <div className="flex items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-3.5">
+                <div>
+                  <p className="text-sm font-semibold text-slate-100">Il tuo piano</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Slot vuoto = passo · attivo {activeSlot + 1}
+                  </p>
+                </div>
+                <span className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-mono text-[10px] text-slate-400">
+                  {plan.filter((p) => p.from && p.to).length}/{slotCount}
+                </span>
+              </div>
 
-          <div
-            className="mt-3 grid gap-2"
-            style={{ gridTemplateColumns: `repeat(${slotCount}, minmax(0, 1fr))` }}
-          >
+              <div className="p-3.5">
+                <div
+                  className="grid gap-2"
+                  style={{ gridTemplateColumns: `repeat(${slotCount}, minmax(0, 1fr))` }}
+                >
             {slotsUi.map((p, i) => {
               const contested = bidSlot === i && bidAmount > 0;
               return (
                 <div
                   key={i}
-                  className={`flex min-h-14 flex-col overflow-hidden rounded-lg border ${
+                  className={`flex min-h-20 flex-col overflow-hidden rounded-xl border transition ${
                     contested
-                      ? "border-amber-400 bg-amber-950/40 ring-2 ring-amber-400/70"
+                      ? "border-amber-400/70 bg-amber-400/[0.08] shadow-[0_0_0_1px_rgba(251,191,36,0.2)]"
                       : activeSlot === i
-                        ? "border-indigo-500 bg-indigo-950/50"
-                        : "border-white/10 bg-slate-900"
+                        ? "border-sky-400/60 bg-sky-400/[0.07] shadow-[0_0_0_1px_rgba(56,189,248,0.14)]"
+                        : "border-white/[0.08] bg-white/[0.025]"
                   }`}
                 >
                   <button
                     type="button"
                     onClick={() => setActiveSlot(i)}
-                    className="flex min-h-11 flex-col px-1 py-2 text-center text-[10px] leading-tight"
+                    className="flex min-h-12 flex-1 flex-col items-center justify-center px-1 py-2 text-center leading-tight transition hover:bg-white/[0.035]"
                   >
-                    <span className="text-slate-500">#{i + 1}</span>
-                    <span className="font-mono text-slate-200">
-                      {p.from && p.to ? `${p.from}→${p.to}` : "—"}
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                      Slot {i + 1}
+                    </span>
+                    <span className={`mt-1 font-mono text-xs font-semibold ${p.from && p.to ? "text-slate-100" : "text-slate-600"}`}>
+                      {p.from && p.to ? `${p.from} → ${p.to}` : "Passo"}
                     </span>
                   </button>
                   <button
@@ -1145,40 +1180,40 @@ export function GamePage() {
                         return Math.min(Math.max(amt, 1), myTokens);
                       });
                     }}
-                    className={`min-h-11 border-t text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${
+                    className={`min-h-9 border-t text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
                       contested
-                        ? "border-amber-400/40 bg-amber-500/20 text-amber-100"
-                        : "border-white/10 text-slate-400"
+                        ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                        : "border-white/[0.06] text-slate-500 hover:bg-white/[0.035] hover:text-slate-300"
                     }`}
                   >
-                    {contested ? `◆ ${bidAmount}` : "◆"}
+                    {contested ? `◆ Iniziativa ${bidAmount}` : "◆ Iniziativa"}
                   </button>
                 </div>
               );
             })}
-          </div>
+                </div>
 
-          <div className="mt-3 rounded-2xl border border-white/10 bg-slate-950 px-3 py-3">
+                <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-3">
             {myTokens <= 0 ? (
               <p className="text-sm text-slate-400">
                 Nessun gettone: in questo round non puoi contestare la priorità.
               </p>
             ) : (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm text-slate-200">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-slate-300">
                     {bidSlot == null || bidAmount <= 0
-                      ? "Tocca ◆ su uno slot per contestarlo."
-                      : `Priorità sullo slot ${bidSlot + 1}`}
+                      ? "Scegli uno slot per l'iniziativa"
+                      : `Iniziativa · slot ${bidSlot + 1}`}
                   </p>
-                  <p className="font-mono text-sm text-amber-200">
+                  <p className="font-mono text-xs font-semibold text-amber-300">
                     {bidAmount > 0 ? `${myTokens} → ${Math.max(0, myTokens - bidAmount)}` : `${myTokens} gettoni`}
                   </p>
                 </div>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2.5 flex gap-2">
                   <button
                     type="button"
-                    className="grid h-11 w-11 place-items-center rounded-xl bg-slate-800 text-lg disabled:opacity-40"
+                    className="grid h-10 w-10 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-lg text-slate-200 transition hover:bg-white/[0.08] disabled:opacity-30"
                     disabled={!canEditPlan || bidSlot == null || bidAmount <= 1}
                     onClick={() => {
                       setBidTouch((n) => n + 1);
@@ -1188,12 +1223,12 @@ export function GamePage() {
                   >
                     −
                   </button>
-                  <div className="grid h-11 min-w-11 flex-1 place-items-center rounded-xl bg-slate-900 font-mono text-slate-100 ring-1 ring-white/10">
+                  <div className="grid h-10 min-w-11 flex-1 place-items-center rounded-lg border border-white/[0.08] bg-slate-950/60 font-mono text-sm font-semibold text-slate-100">
                     {bidSlot == null ? "—" : bidAmount}
                   </div>
                   <button
                     type="button"
-                    className="grid h-11 w-11 place-items-center rounded-xl bg-slate-800 text-lg disabled:opacity-40"
+                    className="grid h-10 w-10 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-lg text-slate-200 transition hover:bg-white/[0.08] disabled:opacity-30"
                     disabled={!canEditPlan || bidSlot == null || bidAmount >= myTokens}
                     onClick={() => {
                       setBidTouch((n) => n + 1);
@@ -1205,7 +1240,7 @@ export function GamePage() {
                   </button>
                   <button
                     type="button"
-                    className="h-11 rounded-xl bg-slate-800 px-3 text-sm disabled:opacity-40"
+                    className="h-10 rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 text-xs text-slate-400 transition hover:bg-white/[0.08] disabled:opacity-30"
                     disabled={!canEditPlan || bidSlot == null}
                     onClick={() => {
                       setBidTouch((n) => n + 1);
@@ -1218,27 +1253,28 @@ export function GamePage() {
                 </div>
               </>
             )}
-          </div>
+                </div>
 
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => clearSlot(activeSlot)}
-              className="h-11 flex-1 rounded-xl bg-slate-800 text-sm disabled:opacity-40"
-              disabled={!canEditPlan || viewingHistory}
-            >
-              Svuota slot
-            </button>
-            <button
-              type="button"
-              onClick={confirmPlan}
-              className="hidden h-11 flex-1 rounded-xl bg-indigo-600 text-sm font-medium text-white disabled:opacity-40 lg:block"
-              disabled={!canEditPlan || locked || viewingHistory}
-            >
-              Conferma
-            </button>
-          </div>
-            </>
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => clearSlot(activeSlot)}
+                    className="h-11 flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] text-xs font-medium text-slate-300 transition hover:bg-white/[0.08] disabled:opacity-40"
+                    disabled={!canEditPlan || viewingHistory}
+                  >
+                    Svuota slot
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmPlan}
+                    className="hidden h-11 flex-[1.35] rounded-xl bg-sky-500 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-950/25 transition hover:bg-sky-400 active:scale-[0.99] disabled:opacity-40 lg:block"
+                    disabled={!canEditPlan || locked || viewingHistory}
+                  >
+                    Conferma piano
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
           {viewingHistory && (
@@ -1259,22 +1295,25 @@ export function GamePage() {
               if (idx >= 0) setHistoryCursor(idx);
             }}
           />
-        </div>
-      </div>
+        </aside>
+      </main>
 
       {phase === "planning" && myColor && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-slate-950/95 px-3 py-3 backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/[0.08] bg-slate-950/90 px-3 py-3 shadow-[0_-10px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl lg:hidden">
           <div className="mx-auto flex max-w-5xl items-center gap-3 pb-[env(safe-area-inset-bottom)]">
-            <p className="min-w-0 flex-1 font-mono text-sm text-amber-200">
-              {bidAmount > 0 ? `${myTokens} → ${Math.max(0, myTokens - bidAmount)}` : `${myTokens} gettoni`}
-            </p>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Gettoni dopo l'offerta</p>
+              <p className="font-mono text-sm font-semibold text-amber-300">
+                {bidAmount > 0 ? `${myTokens} → ${Math.max(0, myTokens - bidAmount)}` : `${myTokens} disponibili`}
+              </p>
+            </div>
             <button
               type="button"
               onClick={confirmPlan}
-              className="h-12 min-w-32 rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white disabled:opacity-40"
+              className="h-12 min-w-36 rounded-xl bg-sky-500 px-4 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-950/30 transition active:scale-[0.98] disabled:opacity-40"
               disabled={!canEditPlan || locked || viewingHistory}
             >
-              Conferma
+              Conferma piano
             </button>
           </div>
         </div>
@@ -1296,17 +1335,18 @@ function TokenChip({
 }) {
   return (
     <span
-      className={`inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-xs ${
+      className={`inline-flex min-h-9 items-center gap-1.5 rounded-xl border px-2.5 text-xs ${
         pulse ? "token-spend" : ""
       } ${
         mine
-          ? "border-amber-400/50 bg-amber-950/60 text-amber-100"
-          : "border-white/10 bg-slate-900 text-slate-200"
+          ? "border-amber-400/30 bg-amber-400/[0.08] text-amber-100"
+          : "border-white/[0.08] bg-white/[0.035] text-slate-200"
       }`}
     >
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</span>
+      <span className={`h-1.5 w-1.5 rounded-full ${mine ? "bg-amber-400" : "bg-slate-500"}`} />
+      <span className="hidden text-[9px] font-semibold uppercase tracking-wide text-slate-500 sm:inline">{label}</span>
       <span className="font-mono text-sm font-semibold">{count}</span>
-      <span className="text-[10px] text-slate-500">/4</span>
+      <span className="text-[9px] text-slate-600">/4</span>
     </span>
   );
 }
@@ -1347,17 +1387,17 @@ function RoundHistoryPanel({
         : `Storico: ${Math.min(totalFens, cursor + 1)}/${totalFens}`;
   return (
     <div
-      className="flex max-h-[min(100vw-24px,420px)] flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-950 p-3 lg:h-[min(100vw-24px,420px)]"
+      className="flex max-h-72 flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-slate-950/55 p-3 backdrop-blur lg:max-h-80"
     >
       <div className="flex shrink-0 items-center justify-between gap-2">
         <div className="flex items-baseline gap-2">
-          <h2 className="text-sm font-semibold text-slate-100">Round precedenti</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Storico</h2>
           {modeLabel && <span className="text-[11px] text-slate-500">{modeLabel}</span>}
         </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-slate-900 text-sm text-slate-200 disabled:opacity-30"
+            className="grid h-7 w-7 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-xs text-slate-300 transition hover:bg-white/[0.07] disabled:opacity-30"
             onClick={onBack}
             disabled={!canBack}
             aria-label="Storico indietro (freccia sinistra)"
@@ -1367,7 +1407,7 @@ function RoundHistoryPanel({
           </button>
           <button
             type="button"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-slate-900 text-sm text-slate-200 disabled:opacity-30"
+            className="grid h-7 w-7 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-xs text-slate-300 transition hover:bg-white/[0.07] disabled:opacity-30"
             onClick={onForward}
             disabled={!canForward}
             aria-label="Storico avanti (freccia destra)"
@@ -1380,7 +1420,7 @@ function RoundHistoryPanel({
       </div>
       <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 scrollbar-slate">
         {historyLines.length > 0 && (
-          <div className="space-y-1.5 rounded-xl border border-white/5 bg-slate-900/50 p-2">
+          <div className="space-y-1.5 rounded-xl border border-white/[0.05] bg-white/[0.025] p-2.5">
             <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
               Log partita
             </div>
@@ -1421,7 +1461,7 @@ function RoundHistoryPanel({
               <button
                 key={ri}
                 type="button"
-                className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-left text-xs"
+                className="w-full rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-left text-xs transition hover:border-white/[0.13] hover:bg-white/[0.045]"
                 onClick={() => onSelectFen(lastFen)}
               >
                 <div className="flex items-center justify-between">
