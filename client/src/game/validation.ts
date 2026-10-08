@@ -27,6 +27,32 @@ export function forkForSide(fen: string, color: Color): Chess {
   return c;
 }
 
+function tryFork(fen: string, color: Color): Chess | null {
+  try {
+    return forkForSide(fen, color);
+  } catch {
+    return null;
+  }
+}
+
+function isOwnKingAt(c: Chess, square: Square, color: Color): boolean {
+  const target = c.get(square);
+  return !!target && target.type === "k" && target.color === color;
+}
+
+function isEnemyKingAt(c: Chess, square: Square, color: Color): boolean {
+  const target = c.get(square);
+  return !!target && target.type === "k" && target.color !== color;
+}
+
+function attacks(c: Chess, from: Square, to: Square, color: Color): boolean {
+  try {
+    return c.attackers(to, color).includes(from);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * If king is dropped on own rook, map to the king's castling destination (g1/c1/g8/c8).
  */
@@ -59,33 +85,51 @@ export function isMoveLegalForSide(
   to: Square,
   color: Color
 ): boolean {
-  const toN = normalizeCastleTarget(fen, from, to, color);
-  const c = forkForSide(fen, color);
-  const piece = c.get(from);
-  if (!piece || piece.color !== color) return false;
-  const moves = c.moves({ square: from, verbose: true });
-  if (moves.some((m) => m.to === toN)) return true;
-  const target = c.get(toN);
-  if (target && target.color === color) {
-    c.remove(toN);
-    const moves2 = c.moves({ square: from, verbose: true });
-    return moves2.some((m) => m.to === toN);
+  try {
+    const toN = normalizeCastleTarget(fen, from, to, color);
+    const c = forkForSide(fen, color);
+    const piece = c.get(from);
+    if (!piece || piece.color !== color) return false;
+    if (isOwnKingAt(c, toN, color)) return false;
+    const moves = c.moves({ square: from, verbose: true });
+    if (moves.some((m) => m.to === toN)) return true;
+    const target = c.get(toN);
+    if (target && target.color === color && target.type !== "k") {
+      c.remove(toN);
+      const moves2 = c.moves({ square: from, verbose: true });
+      return moves2.some((m) => m.to === toN);
+    }
+    if (isEnemyKingAt(c, toN, color) && attacks(c, from, toN, color)) return true;
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 export function isInCheckForSide(fen: string, color: Color): boolean {
-  const c = forkForSide(fen, color);
-  return c.isCheck();
+  const c = tryFork(fen, color);
+  if (!c) return false;
+  try {
+    return c.isCheck();
+  } catch {
+    return false;
+  }
 }
 
 /** Square of `color`'s king in `fen` (piece placement only; ignores side to move). */
 export function getKingSquareOf(fen: string, color: Color): Square | null {
-  const c = new Chess();
-  c.load(fen.trim());
-  for (const sq of ALL_SQUARES) {
-    const p = c.get(sq);
-    if (p && p.type === "k" && p.color === color) return sq;
+  const piece = color === "w" ? "K" : "k";
+  const board = fen.trim().split(/\s+/)[0] ?? "";
+  const ranks = board.split("/");
+  for (let r = 0; r < ranks.length; r++) {
+    let file = 0;
+    for (const ch of ranks[r] ?? "") {
+      if (ch >= "1" && ch <= "8") file += ch.charCodeAt(0) - 48;
+      else {
+        if (ch === piece && file < 8) return `${"abcdefgh"[file]}${8 - r}` as Square;
+        file++;
+      }
+    }
   }
   return null;
 }
@@ -96,7 +140,8 @@ export function getLegalTargetsForPlanning(
   from: Square,
   color: Color
 ): Square[] {
-  const c = forkForSide(fen, color);
+  const c = tryFork(fen, color);
+  if (!c) return [];
   const piece = c.get(from);
   if (!piece || piece.color !== color) return [];
   const out = new Set<Square>();
@@ -106,12 +151,19 @@ export function getLegalTargetsForPlanning(
   }
   for (const sq of ALL_SQUARES) {
     const occ = c.get(sq);
-    if (!occ || occ.color !== color) continue;
+    if (!occ || occ.color !== color || occ.type === "k") continue;
     if (primary.some((m) => m.to === sq)) continue;
-    const trial = forkForSide(fen, color);
+    const trial = tryFork(fen, color);
+    if (!trial) continue;
     trial.remove(sq as Square);
     const again = trial.moves({ square: from, verbose: true });
     if (again.some((m) => m.to === (sq as Square))) out.add(sq as Square);
+  }
+  for (const sq of ALL_SQUARES) {
+    const occ = c.get(sq);
+    if (occ && occ.type === "k" && occ.color !== color && attacks(c, from, sq, color)) {
+      out.add(sq);
+    }
   }
   return [...out];
 }
@@ -122,19 +174,27 @@ export function findVerboseMoveTo(
   to: Square,
   color: Color
 ) {
-  const toN = normalizeCastleTarget(fen, from, to, color);
-  const c = forkForSide(fen, color);
-  const piece = c.get(from);
-  if (!piece || piece.color !== color) return null;
-  let found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
-  if (!found) {
-    const target = c.get(toN);
-    if (target && target.color === color) {
-      c.remove(toN);
-      found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+  try {
+    const toN = normalizeCastleTarget(fen, from, to, color);
+    const c = forkForSide(fen, color);
+    const piece = c.get(from);
+    if (!piece || piece.color !== color) return null;
+    if (isOwnKingAt(c, toN, color)) return null;
+    let found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+    if (!found) {
+      const target = c.get(toN);
+      if (target && target.color === color && target.type !== "k") {
+        c.remove(toN);
+        found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+      }
     }
+    if (!found && isEnemyKingAt(c, toN, color) && attacks(c, from, toN, color)) {
+      return { to: toN, promotion: undefined, san: "" };
+    }
+    return found ? { to: toN, promotion: found.promotion, san: found.san } : null;
+  } catch {
+    return null;
   }
-  return found ? { to: toN, promotion: found.promotion, san: found.san } : null;
 }
 
 /** Applica una mossa di pianificazione sul FEN (rimuove il pezzo amico sul `to` se serve), come sul server. */
@@ -144,21 +204,38 @@ export function applyPlanningMove(
   to: Square,
   color: Color
 ): string | null {
-  const toN = normalizeCastleTarget(fen, from, to, color);
-  const c = forkForSide(fen, color);
-  const piece = c.get(from);
-  if (!piece || piece.color !== color) return null;
-  const moves = c.moves({ square: from, verbose: true });
-  let found = moves.find((m) => m.to === toN);
-  if (!found) {
-    const target = c.get(toN);
-    if (target && target.color === color) {
-      c.remove(toN);
-      found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+  try {
+    const toN = normalizeCastleTarget(fen, from, to, color);
+    const c = forkForSide(fen, color);
+    const piece = c.get(from);
+    if (!piece || piece.color !== color) return null;
+    if (isOwnKingAt(c, toN, color)) return null;
+    const moves = c.moves({ square: from, verbose: true });
+    let found = moves.find((m) => m.to === toN);
+    if (!found) {
+      const target = c.get(toN);
+      if (target && target.color === color && target.type !== "k") {
+        c.remove(toN);
+        found = c.moves({ square: from, verbose: true }).find((m) => m.to === toN);
+      }
     }
+    if (!found) {
+      if (isEnemyKingAt(c, toN, color) && attacks(c, from, toN, color)) {
+        c.remove(from);
+        c.remove(toN);
+        c.put({ type: piece.type, color: piece.color }, toN);
+        try {
+          return c.fen();
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+    const result = c.move({ from, to: toN, promotion: found.promotion });
+    if (!result) return null;
+    return c.fen();
+  } catch {
+    return null;
   }
-  if (!found) return null;
-  const result = c.move({ from, to: toN, promotion: found.promotion });
-  if (!result) return null;
-  return c.fen();
 }

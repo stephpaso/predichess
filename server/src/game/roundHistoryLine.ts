@@ -9,7 +9,14 @@ export function formatRoundHistoryLine(round: RoundSnapshot): string {
     const b = s.blackMove
       ? `Nero ${s.blackMove.slice(0, 2)}→${s.blackMove.slice(2)}${s.blackApplied ? "" : " (respinta)"}`
       : "Nero —";
-    let seg = `S${i + 1}: ${w}, ${b}`;
+    const who = s.firstMover === "black" ? "Nero" : "Bianco";
+    const wb = s.whiteBidAmount ?? 0;
+    const bb = s.blackBidAmount ?? 0;
+    const prio =
+      wb <= 0 && bb <= 0
+        ? `priorità ${who} (nessuna offerta → alternanza)`
+        : `priorità ${who} (offerte Bianco ${wb}, Nero ${bb})`;
+    let seg = `S${i + 1}: ${w}, ${b} | ${prio}`;
     if (s.collision) seg += " | collisione";
     const caps = s.captures?.toArray?.() ?? [];
     if (caps.length) seg += ` | ${caps.join(", ")}`;

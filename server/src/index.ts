@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -14,8 +15,71 @@ import { getLiveStats } from "./stats.js";
 const PORT = Number(process.env.PORT) || 2567;
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+/**
+ * CORS: explicit allowlist from CORS_ORIGIN (comma-separated).
+ * When unset, disable cross-origin CORS (same-origin SPA on this service).
+ * Never use origin:true / wildcard reflection — CodeQL js/cors-permissive-configuration.
+ */
+const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/** Resolve Allow-Origin only from the allowlist (never reflect raw Origin / never *). */
+function allowedCorsOrigin(requestOrigin: string | null): string {
+  if (!requestOrigin || corsOrigins.length === 0) return "";
+  const idx = corsOrigins.indexOf(requestOrigin);
+  return idx >= 0 ? corsOrigins[idx]! : "";
+}
+
+app.use(
+  cors({
+    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    methods: ["GET", "POST", "OPTIONS"],
+  })
+);
+
+// Colyseus prepends CORS on every HTTP response via matchMaker.controller —
+// default getCorsHeaders reflects any Origin. Override to the same allowlist.
+matchMaker.controller.DEFAULT_CORS_HEADERS = {
+  ...matchMaker.controller.DEFAULT_CORS_HEADERS,
+  "Access-Control-Allow-Origin": "",
+};
+matchMaker.controller.getCorsHeaders = (headers: Headers) => ({
+  "Access-Control-Allow-Origin": allowedCorsOrigin(headers.get("origin")),
+});
+
+app.use(express.json({ limit: "16kb" }));
+
+/** Global limiter — covers FS access (sendFile / static) for CodeQL js/missing-rate-limiting. */
+const globalLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "rate_limited" },
+});
+app.use(globalLimiter);
+
+/** Tighter limit on room-creation endpoints (resource-intensive matchMaker.create). */
+const createLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "rate_limited" },
+});
+
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // API + WS app; CSP left permissive for the SPA assets served from the same origin.
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  next();
+});
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -55,7 +119,7 @@ if (fs.existsSync(clientDistPath)) {
   app.use(express.static(clientDistPath));
 }
 
-app.post("/match/create", async (req, res) => {
+app.post("/match/create", createLimiter, async (req, res) => {
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     hostColorPref?: "white" | "black" | "random";
@@ -99,7 +163,7 @@ app.post("/match/create", async (req, res) => {
   }
 });
 
-app.post("/bot/create", async (req, res) => {
+app.post("/bot/create", createLimiter, async (req, res) => {
   const roomCode = generateRoomCode(5);
   const body = (req.body ?? {}) as {
     botElo?: number;
@@ -137,7 +201,13 @@ app.post("/bot/create", async (req, res) => {
 });
 
 app.get("/match/resolve/:code", (req, res) => {
-  const code = String(req.params.code ?? "").toUpperCase();
+  const raw = String(req.params.code ?? "");
+  // Only accept short room codes from our alphabet (prevents oversized / odd lookups).
+  if (!/^[A-Za-z0-9]{1,16}$/.test(raw)) {
+    res.status(400).json({ error: "invalid_code" });
+    return;
+  }
+  const code = raw.toUpperCase();
   const roomId = resolveRoomCode(code);
   if (!roomId) {
     res.status(404).json({ error: "not_found" });
@@ -146,7 +216,7 @@ app.get("/match/resolve/:code", (req, res) => {
   res.json({ roomId });
 });
 
-// SPA fallback (must be after API routes)
+// SPA fallback (must be after API routes) — sendFile is FS access; covered by globalLimiter.
 app.get("*", (_req, res) => {
   const indexPath = path.join(clientDistPath, "index.html");
   if (!fs.existsSync(indexPath)) {
@@ -167,5 +237,5 @@ gameServer.define("predict_chess", GameRoom);
 gameServer.define("bot_chess", BotRoom);
 
 gameServer.listen(PORT).then(() => {
-  console.log(`Predict Chess server listening on http://localhost:${PORT}`);
+  console.log(`Predict Chess server listening on http://0.0.0.0:${PORT}`);
 });

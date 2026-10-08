@@ -21,6 +21,13 @@ export class StepSnapshot extends Schema {
   @type("boolean") blackApplied: boolean = false;
   @type("boolean") collision: boolean = false;
   @type(["string"]) captures = new ArraySchema<string>(); // e.g. ["b:p@e4"]
+  /** "white" | "black" — who moved first in this step. */
+  @type("string") firstMover: string = "";
+  /** FEN after the first half-move (priority order). */
+  @type("string") fenAfterFirst: string = "";
+  /** Bid revealed for THIS slot only (0 = no bid on the slot). */
+  @type("number") whiteBidAmount: number = 0;
+  @type("number") blackBidAmount: number = 0;
 }
 
 export class RoundSnapshot extends Schema {
@@ -28,6 +35,13 @@ export class RoundSnapshot extends Schema {
   @type("string") fenBefore: string = "";
   @type("string") fenAfter: string = "";
   @type([StepSnapshot]) steps = new ArraySchema<StepSnapshot>();
+  /** Revealed after resolution. -1 = no bid. */
+  @type("number") whiteBidSlot: number = -1;
+  @type("number") whiteBidAmount: number = 0;
+  @type("number") blackBidSlot: number = -1;
+  @type("number") blackBidAmount: number = 0;
+  @type("number") whiteTokensAfter: number = 0;
+  @type("number") blackTokensAfter: number = 0;
 }
 
 export class PredictChessState extends Schema {
@@ -67,4 +81,8 @@ export class PredictChessState extends Schema {
 
   /** Human-readable log lines, one per resolved round (and intra-round game end if any). */
   @type(["string"]) historyLog = new ArraySchema<string>();
+
+  /** Public token balances. Bids are NOT stored here — they stay server-side until resolution. */
+  @type("number") whiteTokens: number = 3;
+  @type("number") blackTokens: number = 3;
 }

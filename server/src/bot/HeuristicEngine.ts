@@ -170,3 +170,59 @@ export class HeuristicEngine implements IBotEngine {
   static parseUci = parseUci;
 }
 
+/**
+ * Bid 1 on the first planned slot that captures or escapes check.
+ * At the token cap, bid min(tokens, 2) so a refresh is not wasted.
+ * Otherwise 0.
+ */
+export function chooseInitiativeBid(
+  fen: string,
+  movesUci: string[],
+  tokens: number
+): { slot: number; amount: number } | null {
+  const purse = Math.max(0, Math.min(4, Math.floor(Number(tokens) || 0)));
+  if (purse <= 0) return null;
+  const chess = new Chess();
+  try {
+    chess.load(fen);
+  } catch {
+    return null;
+  }
+  const side = chess.turn();
+  let chosen: number | null = null;
+  for (let i = 0; i < movesUci.length; i++) {
+    const parsed = parseUci(movesUci[i] ?? "");
+    if (!parsed) continue;
+    try {
+      chess.load(setFenTurn(chess.fen(), side));
+    } catch {
+      break;
+    }
+    const legal = chess.moves({ verbose: true }) as Move[];
+    const mv = legal.find((m) => m.from === parsed.from && m.to === parsed.to);
+    if (!mv) continue;
+    let wasCheck = false;
+    try {
+      wasCheck = chess.inCheck();
+    } catch {
+      wasCheck = false;
+    }
+    const isCapture = !!mv.captured;
+    const applied = chess.move({ from: mv.from, to: mv.to, promotion: mv.promotion ?? parsed.promotion });
+    if (!applied) continue;
+    let stillCheck = false;
+    try {
+      stillCheck = chess.inCheck();
+    } catch {
+      stillCheck = false;
+    }
+    if (isCapture || (wasCheck && !stillCheck)) {
+      chosen = i;
+      break;
+    }
+  }
+  if (chosen == null) return null;
+  const amount = purse >= 4 ? Math.min(purse, 2) : 1;
+  return { slot: chosen, amount };
+}
+
