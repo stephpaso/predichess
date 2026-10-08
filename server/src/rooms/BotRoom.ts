@@ -18,6 +18,13 @@ import {
   type InitiativeBid,
 } from "../game/initiative.js";
 import { kingCaptureWinner } from "../game/kings.js";
+import {
+  advanceEmptyPlanStreaks,
+  disqualificationWinner,
+  emptyPlanDqMessage,
+  type EmptyPlanStreaks,
+} from "../game/emptyPlans.js";
+import { clampPredictiveSlots, clampTurnTimeSec, PLAN_TIME_SEC_DEFAULT, PREDICTIVE_SLOTS_DEFAULT } from "../game/matchOptions.js";
 import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
@@ -27,8 +34,6 @@ import { chooseInitiativeBid, HeuristicEngine } from "../bot/HeuristicEngine.js"
 const TICK_MS = 100;
 const IDLE_DISPOSE_MS = 3 * 60_000;
 const BOT_SESSION_ID = "BOT";
-/** Bot vs umano: annulla se l'umano non mette mosse negli slot per così tanti round di fila (il bot muove sempre). */
-const CONSECUTIVE_EMPTY_HUMAN_ROUNDS = 10;
 
 function planHasAnyMove(moves: PlannedMoveInput[]): boolean {
   return moves.some((m) => !!m.from && !!m.to);
@@ -44,8 +49,8 @@ function withFenTurn(fen: string, turn: "w" | "b"): string {
 export class BotRoom extends Room<{ state: PredictChessState }> {
   maxClients = 1;
   private roomCode: string = "";
-  private planMs = 20_000;
-  private predictiveSlots = 3;
+  private planMs = PLAN_TIME_SEC_DEFAULT * 1000;
+  private predictiveSlots = PREDICTIVE_SLOTS_DEFAULT;
   private playerColorPref: "white" | "black" | "random" = "random";
   private gameMode: GameMode = "classic";
   private playerIsWhite = true;
@@ -55,7 +60,7 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
   private pendingReconnections = new Set<string>();
-  private consecutiveHumanEmptyRounds = 0;
+  private emptyPlanStreaks: EmptyPlanStreaks = { white: 0, black: 0 };
   private whiteBid: InitiativeBid | null = null;
   private blackBid: InitiativeBid | null = null;
   private planningRoundsStarted = 0;
@@ -116,9 +121,9 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
       options.color === "white" || options.color === "black" || options.color === "random"
         ? options.color
         : "random";
-    const turnTimeSec = Math.max(10, Math.min(60, Math.floor(Number(options.turnTimeSec ?? 20) || 0)));
+    const turnTimeSec = clampTurnTimeSec(options.turnTimeSec);
     this.planMs = turnTimeSec * 1000;
-    this.predictiveSlots = Math.max(1, Math.min(5, Math.floor(Number(options.predictiveMoves ?? 3) || 0)));
+    this.predictiveSlots = clampPredictiveSlots(options.predictiveMoves);
     this.botElo = Math.max(100, Math.min(3000, Math.floor(Number(options.botElo ?? 1000) || 0)));
 
     this.playerIsWhite =
@@ -272,7 +277,7 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
-    this.consecutiveHumanEmptyRounds = 0;
+    this.emptyPlanStreaks = { white: 0, black: 0 };
     this.state.phase = "planning";
     this.startPlanningPhase();
   }
@@ -515,16 +520,13 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
     const wm = this.plannedToInput(this.state.whiteMoves);
     const bm = this.plannedToInput(this.state.blackMoves);
 
-    const humanMoves = this.playerIsWhite ? wm : bm;
-    if (!planHasAnyMove(humanMoves)) {
-      this.consecutiveHumanEmptyRounds++;
-      if (this.consecutiveHumanEmptyRounds >= CONSECUTIVE_EMPTY_HUMAN_ROUNDS) {
-        this.endGame("draw", "stall_empty_plans");
-        return;
-      }
-    } else {
-      this.consecutiveHumanEmptyRounds = 0;
-    }
+    const humanIsWhite = this.playerIsWhite;
+    this.emptyPlanStreaks = advanceEmptyPlanStreaks(
+      this.emptyPlanStreaks,
+      humanIsWhite ? planHasAnyMove(wm) : true,
+      humanIsWhite ? true : planHasAnyMove(bm)
+    );
+    const dq = disqualificationWinner(this.emptyPlanStreaks);
 
     const ignoredCheckLoser = loserForIgnoredCheckIfAny(this.state.fen, wm, bm);
     if (ignoredCheckLoser) {
@@ -589,6 +591,11 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
       return;
     }
 
+    if (dq) {
+      this.endGame(dq, "empty_plan_dq");
+      return;
+    }
+
     this.startPlanningPhase();
   }
 
@@ -602,7 +609,7 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
 
   private endGame(
     winner: "white" | "black" | "draw",
-    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "stall_empty_plans"
+    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "empty_plan_dq"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
@@ -611,8 +618,8 @@ export class BotRoom extends Room<{ state: PredictChessState }> {
     this.state.gameOverReason =
       reason === "ignored_check"
         ? "Sconfitta per mancata uscita dallo scacco"
-        : reason === "stall_empty_plans"
-          ? "Partita annullata: non hai programmato mosse negli slot per troppi round di fila."
+        : reason === "empty_plan_dq"
+          ? emptyPlanDqMessage(winner)
           : "";
     this.state.timerMs = 0;
     this.broadcastStatus();
