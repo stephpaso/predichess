@@ -82,7 +82,7 @@ export type GameModeOption = "classic" | "shuffle";
 export type MatchRoomOptions = {
   hostColorPref: "white" | "black" | "random";
   turnTimeSec: number; // 10-60
-  predictiveSlots: number; // 1-5
+  predictiveSlots: number; // 2-5
   isPublic: boolean;
   mode?: GameModeOption;
 };
@@ -262,7 +262,7 @@ export async function createMatchRoom(options: Partial<MatchRoomOptions> = {}): 
 export type CreateBotRoomOptions = {
   botElo: number;
   color: "white" | "black" | "random";
-  predictiveMoves: number; // 1-5
+  predictiveMoves: number; // 2-5
   turnTimeSec?: number; // optional (defaults server-side)
   mode?: GameModeOption;
 };

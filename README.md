@@ -22,12 +22,12 @@ L'intero ciclo di vita di questo software è stato gestito al **100% in modo aut
 
 Le regole si basano sugli scacchi classici, ma con un twist fondamentale:
 
-1. **Fase di Pianificazione:** Entrambi i giocatori hanno un tempo limitato (default 20s) per programmare una sequenza di mosse (es. 3 o 5 mosse). Durante questa fase, vedi sulla scacchiera l'anteprima dei tuoi movimenti futuri.
-2. **Fase di Risoluzione:** Una volta confermate le sequenze (o allo scadere del tempo), il gioco esegue le mosse automaticamente.
+1. **Fase di Pianificazione:** Entrambi i giocatori programmano fino a N mosse (da 2 a 5, default 2). Gli slot vuoti sono passi. Il round si chiude quando entrambi premono Conferma, oppure allo scadere del tempo (default 45s). Durante questa fase vedi l'anteprima delle mosse scelte.
+2. **Fase di Risoluzione:** Il gioco esegue solo le mosse scelte, step per step. Una mossa illegale salta solo il proprio slot.
 3. **Priorità e Validità:** In ogni step un giocatore muove per primo (Gettoni Iniziativa, oppure alternanza `(round + step) % 2`). L'altro muove sulla scacchiera già aggiornata.
   - Se l'avversario occupa una casella o blocca una traiettoria durante il suo micro-turno, la tua mossa programmata potrebbe diventare **illegale**.
     - In caso di mossa illegale, il pezzo rimane fermo e lo slot viene saltato.
-4. **Vittoria:** Cattura il Re avversario o portalo allo scacco matto durante la risoluzione.
+4. **Vittoria:** Cattura il Re avversario o portalo allo scacco matto durante la risoluzione. Due round di fila senza alcuna mossa squalificano quel giocatore. Lo scacco non parato resta una sconfitta immediata.
 
 ---
 

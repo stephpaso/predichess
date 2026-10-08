@@ -100,8 +100,8 @@ export function JoinRoomPage() {
               )}
               {joinable.map((r) => {
                 const code = (r.code ?? r.roomId).toUpperCase();
-                const tt = r.turnTimeSec ?? 20;
-                const slots = r.predictiveSlots ?? 3;
+                const tt = r.turnTimeSec ?? 45;
+                const slots = r.predictiveSlots ?? 2;
                 const modeLabel = r.gameMode === "shuffle" ? "Shuffle" : "Classico";
                 return (
                   <tr key={r.roomId} className="hover:bg-slate-900/40">

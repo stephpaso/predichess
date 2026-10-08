@@ -11,6 +11,7 @@ import { GameRoom } from "./rooms/GameRoom.js";
 import { BotRoom } from "./rooms/BotRoom.js";
 import { generateRoomCode, registerRoomCode, releaseRoomCode, resolveRoomCode } from "./registry.js";
 import { getLiveStats } from "./stats.js";
+import { clampPredictiveSlots, clampTurnTimeSec } from "./game/matchOptions.js";
 
 const PORT = Number(process.env.PORT) || 2567;
 
@@ -128,8 +129,8 @@ app.post("/match/create", createLimiter, async (req, res) => {
     isPublic?: boolean;
     mode?: "classic" | "shuffle";
   };
-  const turnTimeSecRaw = Number(body.turnTimeSec ?? 20);
-  const predictiveSlotsRaw = Number(body.predictiveSlots ?? 3);
+  const turnTimeSecRaw = body.turnTimeSec;
+  const predictiveSlotsRaw = body.predictiveSlots;
   const isPublic = body.isPublic !== false;
   const hostColorPref =
     body.hostColorPref === "white" || body.hostColorPref === "black" || body.hostColorPref === "random"
@@ -138,8 +139,8 @@ app.post("/match/create", createLimiter, async (req, res) => {
 
   const mode = body.mode === "shuffle" ? "shuffle" : "classic";
 
-  const turnTimeSec = Math.max(10, Math.min(60, Math.floor(turnTimeSecRaw || 0)));
-  const predictiveSlots = Math.max(1, Math.min(5, Math.floor(predictiveSlotsRaw || 0)));
+  const turnTimeSec = clampTurnTimeSec(turnTimeSecRaw);
+  const predictiveSlots = clampPredictiveSlots(predictiveSlotsRaw);
   try {
     const reservation = await matchMaker.create("predict_chess", {
       roomCode,
@@ -174,8 +175,8 @@ app.post("/bot/create", createLimiter, async (req, res) => {
   };
   const botElo = Math.max(100, Math.min(3000, Math.floor(Number(body.botElo ?? 1000) || 0)));
   const color = body.color === "white" || body.color === "black" || body.color === "random" ? body.color : "random";
-  const turnTimeSec = Math.max(10, Math.min(60, Math.floor(Number(body.turnTimeSec ?? 20) || 0)));
-  const predictiveMoves = Math.max(1, Math.min(5, Math.floor(Number(body.predictiveMoves ?? 3) || 0)));
+  const turnTimeSec = clampTurnTimeSec(body.turnTimeSec);
+  const predictiveMoves = clampPredictiveSlots(body.predictiveMoves);
   const mode = body.mode === "shuffle" ? "shuffle" : "classic";
 
   try {

@@ -13,14 +13,19 @@ import {
   type InitiativeBid,
 } from "../game/initiative.js";
 import { kingCaptureWinner } from "../game/kings.js";
+import {
+  advanceEmptyPlanStreaks,
+  disqualificationWinner,
+  emptyPlanDqMessage,
+  type EmptyPlanStreaks,
+} from "../game/emptyPlans.js";
+import { clampPredictiveSlots, clampTurnTimeSec, PLAN_TIME_SEC_DEFAULT, PREDICTIVE_SLOTS_DEFAULT } from "../game/matchOptions.js";
 import { registerRoomCode, releaseRoomCode } from "../registry.js";
 import { onRoomCreated, onRoomDisposed, onUserConnected, onUserDisconnected } from "../stats.js";
 import { normalizeGameMode, pickRandomMidgameFen, type GameMode } from "../utils/fenPool.js";
 
 const TICK_MS = 100;
 const IDLE_DISPOSE_MS = 3 * 60_000;
-/** PvP: annulla la partita se per così tanti round di fila nessuno ha messo mosse negli slot. */
-const CONSECUTIVE_EMPTY_PLAN_ROUNDS_PVP = 5;
 
 function planHasAnyMove(moves: PlannedMoveInput[]): boolean {
   return moves.some((m) => !!m.from && !!m.to);
@@ -29,8 +34,8 @@ function planHasAnyMove(moves: PlannedMoveInput[]): boolean {
 export class GameRoom extends Room<{ state: PredictChessState }> {
   maxClients = 2;
   private roomCode: string = "";
-  private planMs = 20_000;
-  private predictiveSlots = 3;
+  private planMs = PLAN_TIME_SEC_DEFAULT * 1000;
+  private predictiveSlots = PREDICTIVE_SLOTS_DEFAULT;
   private isPublic = true;
   private hostColorPref: "white" | "black" | "random" = "random";
   private gameMode: GameMode = "classic";
@@ -42,7 +47,7 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private ending = false;
   private pendingReconnections = new Set<string>();
-  private consecutiveEmptyPlanRoundsPvp = 0;
+  private emptyPlanStreaks: EmptyPlanStreaks = { white: 0, black: 0 };
   private whiteBid: InitiativeBid | null = null;
   private blackBid: InitiativeBid | null = null;
   private planningRoundsStarted = 0;
@@ -91,9 +96,9 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
       options.hostColorPref === "white" || options.hostColorPref === "black" || options.hostColorPref === "random"
         ? options.hostColorPref
         : "random";
-    const turnTimeSec = Math.max(10, Math.min(60, Math.floor(Number(options.turnTimeSec ?? 20) || 0)));
+    const turnTimeSec = clampTurnTimeSec(options.turnTimeSec);
     this.planMs = turnTimeSec * 1000;
-    this.predictiveSlots = Math.max(1, Math.min(5, Math.floor(Number(options.predictiveSlots ?? 3) || 0)));
+    this.predictiveSlots = clampPredictiveSlots(options.predictiveSlots);
     this.isPublic = options.isPublic !== false;
 
     this.hostIsWhite =
@@ -261,7 +266,7 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     this.state.roundIndex = 0;
     this.state.resolvedRounds.clear();
     this.state.historyLog.clear();
-    this.consecutiveEmptyPlanRoundsPvp = 0;
+    this.emptyPlanStreaks = { white: 0, black: 0 };
     // Hide rooms once started; the Join list should only show pre-game lobbies.
     await this.setPrivate(true);
     await this.setMetadata({
@@ -497,17 +502,12 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     const wm = this.plannedToInput(this.state.whiteMoves);
     const bm = this.plannedToInput(this.state.blackMoves);
 
-    const whiteHas = planHasAnyMove(wm);
-    const blackHas = planHasAnyMove(bm);
-    if (!whiteHas && !blackHas) {
-      this.consecutiveEmptyPlanRoundsPvp++;
-      if (this.consecutiveEmptyPlanRoundsPvp >= CONSECUTIVE_EMPTY_PLAN_ROUNDS_PVP) {
-        this.endGame("draw", "stall_empty_plans");
-        return;
-      }
-    } else {
-      this.consecutiveEmptyPlanRoundsPvp = 0;
-    }
+    this.emptyPlanStreaks = advanceEmptyPlanStreaks(
+      this.emptyPlanStreaks,
+      planHasAnyMove(wm),
+      planHasAnyMove(bm)
+    );
+    const dq = disqualificationWinner(this.emptyPlanStreaks);
 
     const ignoredCheckLoser = loserForIgnoredCheckIfAny(this.state.fen, wm, bm);
     if (ignoredCheckLoser) {
@@ -572,6 +572,11 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
       return;
     }
 
+    if (dq) {
+      this.endGame(dq, "empty_plan_dq");
+      return;
+    }
+
     this.startPlanningPhase();
   }
 
@@ -585,7 +590,7 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
 
   private endGame(
     winner: "white" | "black" | "draw",
-    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "stall_empty_plans"
+    reason: "king" | "checkmate" | "draw" | "disconnect" | "resign" | "ignored_check" | "empty_plan_dq"
   ) {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = undefined;
@@ -594,8 +599,8 @@ export class GameRoom extends Room<{ state: PredictChessState }> {
     this.state.gameOverReason =
       reason === "ignored_check"
         ? "Sconfitta per mancata uscita dallo scacco"
-        : reason === "stall_empty_plans"
-          ? "Partita annullata: per troppi round nessuno ha programmato mosse negli slot."
+        : reason === "empty_plan_dq"
+          ? emptyPlanDqMessage(winner)
           : "";
     this.state.timerMs = 0;
     this.broadcastStatus();
